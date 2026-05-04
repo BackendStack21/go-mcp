@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -513,5 +514,407 @@ func TestUnknownMethod(t *testing.T) {
 	errObj := errResp["error"].(map[string]any)
 	if errObj["code"].(float64) != -32601 {
 		t.Errorf("expected code -32601, got %v", errObj["code"])
+	}
+}
+
+// ----- Edge Cases -----
+
+func TestDecodeError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.runWithIO(inReader, outWriter)
+	}()
+
+	// Send malformed JSON
+	go func() {
+		inWriter.Write([]byte(`this is not json` + "\n"))
+		inWriter.Close()
+	}()
+
+	// Drain the output pipe to avoid blocking
+	go io.Copy(io.Discard, outReader)
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode error") {
+		t.Errorf("expected 'decode error' in message, got: %v", err)
+	}
+}
+
+func TestNotificationIgnored(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+
+	go func() {
+		srv.runWithIO(inReader, outWriter)
+	}()
+
+	// Send initialize
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+	}()
+	var initResp map[string]any
+	json.NewDecoder(outReader).Decode(&initResp)
+
+	// Send a notification (no id field) — should be consumed silently, no response
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n"))
+	}()
+
+	// Send tools/list to verify server is still alive
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	var listResp map[string]any
+	if err := json.NewDecoder(outReader).Decode(&listResp); err != nil {
+		t.Fatalf("server should still respond after notification: %v", err)
+	}
+	if listResp["id"].(float64) != 2 {
+		t.Errorf("expected id 2, got %v", listResp["id"])
+	}
+}
+
+func TestToolsCallInvalidParams(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+
+	go func() {
+		srv.runWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+	}()
+	json.NewDecoder(outReader).Decode(new(map[string]any))
+
+	// Send tools/call with params that fail unmarshal (params is a string, not object)
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":"bad"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	var errResp map[string]any
+	if err := json.NewDecoder(outReader).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error: %v", err)
+	}
+	errObj := errResp["error"].(map[string]any)
+	if errObj["code"].(float64) != -32602 {
+		t.Errorf("expected code -32602, got %v", errObj["code"])
+	}
+}
+
+func TestResourcesReadInvalidParams(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+
+	go func() {
+		srv.runWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+	}()
+	json.NewDecoder(outReader).Decode(new(map[string]any))
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":"bad"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	var errResp map[string]any
+	json.NewDecoder(outReader).Decode(&errResp)
+	errObj := errResp["error"].(map[string]any)
+	if errObj["code"].(float64) != -32602 {
+		t.Errorf("expected code -32602, got %v", errObj["code"])
+	}
+}
+
+func TestResourcesReadHandlerError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	srv.AddResource(Resource{
+		URI:      "file:///failing",
+		Name:     "Failing Resource",
+		MimeType: "text/plain",
+		Handler: func(ctx context.Context) (string, error) {
+			return "", fmt.Errorf("resource unavailable")
+		},
+	})
+
+	go func() {
+		srv.runWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+	}()
+	json.NewDecoder(outReader).Decode(new(map[string]any))
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"file:///failing"}}` + "\n"))
+		inWriter.Close()
+	}()
+
+	var errResp map[string]any
+	json.NewDecoder(outReader).Decode(&errResp)
+	errObj := errResp["error"].(map[string]any)
+	if errObj["code"].(float64) != -32000 {
+		t.Errorf("expected code -32000, got %v", errObj["code"])
+	}
+	if errObj["message"] != "resource unavailable" {
+		t.Errorf("expected 'resource unavailable', got %v", errObj["message"])
+	}
+}
+
+func TestPromptsGetInvalidParams(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+
+	go func() {
+		srv.runWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+	}()
+	json.NewDecoder(outReader).Decode(new(map[string]any))
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":"bad"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	var errResp map[string]any
+	json.NewDecoder(outReader).Decode(&errResp)
+	errObj := errResp["error"].(map[string]any)
+	if errObj["code"].(float64) != -32602 {
+		t.Errorf("expected code -32602, got %v", errObj["code"])
+	}
+}
+
+func TestPromptsGetUnknown(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+
+	go func() {
+		srv.runWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+	}()
+	json.NewDecoder(outReader).Decode(new(map[string]any))
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"nonexistent","arguments":{}}}` + "\n"))
+		inWriter.Close()
+	}()
+
+	var errResp map[string]any
+	json.NewDecoder(outReader).Decode(&errResp)
+	errObj := errResp["error"].(map[string]any)
+	if errObj["code"].(float64) != -32602 {
+		t.Errorf("expected code -32602, got %v", errObj["code"])
+	}
+}
+
+func TestPromptsGetHandlerError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	srv.AddPrompt(Prompt{
+		Name:        "failing-prompt",
+		Description: "Always fails",
+		Arguments:   []PromptArg{},
+		Handler: func(ctx context.Context, args map[string]any) ([]PromptMessage, error) {
+			return nil, fmt.Errorf("prompt generation failed")
+		},
+	})
+
+	go func() {
+		srv.runWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+	}()
+	json.NewDecoder(outReader).Decode(new(map[string]any))
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"failing-prompt","arguments":{}}}` + "\n"))
+		inWriter.Close()
+	}()
+
+	var errResp map[string]any
+	json.NewDecoder(outReader).Decode(&errResp)
+	errObj := errResp["error"].(map[string]any)
+	if errObj["code"].(float64) != -32000 {
+		t.Errorf("expected code -32000, got %v", errObj["code"])
+	}
+	if errObj["message"] != "prompt generation failed" {
+		t.Errorf("expected 'prompt generation failed', got %v", errObj["message"])
+	}
+}
+
+// failWriter is a writer that fails after N writes, used to test error propagation.
+type failWriter struct {
+	failAfter int
+	count     int
+}
+
+func (w *failWriter) Write(p []byte) (int, error) {
+	w.count++
+	if w.count > w.failAfter {
+		return 0, fmt.Errorf("write failed")
+	}
+	return len(p), nil
+}
+
+func TestEncoderWriteError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	w := &failWriter{failAfter: 0} // fails on first write
+
+	srv := NewServer("test-server", "1.0.0")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.runWithIO(inReader, w)
+	}()
+
+	// Send initialize — encoder will fail
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Close()
+	}()
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected encoder write error, got nil")
+	}
+}
+
+func TestDefaultHandlerEncoderError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	w := &failWriter{failAfter: 0} // fails on first write
+
+	srv := NewServer("test-server", "1.0.0")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.runWithIO(inReader, w)
+	}()
+
+	// Send unknown method — triggers default handler, encoder will fail writing error response
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"bogus","params":{}}` + "\n"))
+		inWriter.Close()
+	}()
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected encoder write error, got nil")
+	}
+}
+
+func TestToolsListEncoderError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	w := &failWriter{failAfter: 0}
+
+	srv := NewServer("test-server", "1.0.0")
+	srv.AddTool(Tool{
+		Name:        "t",
+		Description: "d",
+		InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.runWithIO(inReader, w)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected encoder write error, got nil")
+	}
+}
+
+func TestResourcesListEncoderError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	w := &failWriter{failAfter: 0}
+
+	srv := NewServer("test-server", "1.0.0")
+	srv.AddResource(Resource{
+		URI: "file:///x", Name: "X", MimeType: "text/plain",
+		Handler: func(ctx context.Context) (string, error) { return "ok", nil },
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.runWithIO(inReader, w)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected encoder write error, got nil")
+	}
+}
+
+func TestPromptsListEncoderError(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	w := &failWriter{failAfter: 0}
+
+	srv := NewServer("test-server", "1.0.0")
+	srv.AddPrompt(Prompt{
+		Name: "p", Description: "d", Arguments: []PromptArg{},
+		Handler: func(ctx context.Context, args map[string]any) ([]PromptMessage, error) {
+			return []PromptMessage{{Role: "user", Content: NewTextContent("hi")}}, nil
+		},
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.runWithIO(inReader, w)
+	}()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"prompts/list"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("expected encoder write error, got nil")
 	}
 }
