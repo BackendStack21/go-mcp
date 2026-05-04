@@ -30,12 +30,12 @@ func main() {
 		MimeType:    "application/json",
 		Handler: func(ctx context.Context) (string, error) {
 			info := map[string]any{
-				"cores":       runtime.NumCPU(),
-				"goroutines":  runtime.NumGoroutine(),
-				"go_version":  runtime.Version(),
-				"go_os":       runtime.GOOS,
-				"go_arch":     runtime.GOARCH,
-				"timestamp":   time.Now().Format(time.RFC3339),
+				"cores":      runtime.NumCPU(),
+				"goroutines": runtime.NumGoroutine(),
+				"go_version": runtime.Version(),
+				"go_os":      runtime.GOOS,
+				"go_arch":    runtime.GOARCH,
+				"timestamp":  time.Now().Format(time.RFC3339),
 			}
 			data, _ := json.MarshalIndent(info, "", "  ")
 			return string(data), nil
@@ -53,15 +53,15 @@ func main() {
 			runtime.ReadMemStats(&m)
 
 			info := map[string]any{
-				"alloc_mb":         m.Alloc / 1e6,
-				"total_alloc_mb":   m.TotalAlloc / 1e6,
-				"sys_mb":           m.Sys / 1e6,
-				"heap_alloc_mb":    m.HeapAlloc / 1e6,
-				"heap_sys_mb":      m.HeapSys / 1e6,
-				"heap_objects":     m.HeapObjects,
-				"gc_cycles":        m.NumGC,
+				"alloc_mb":          m.Alloc / 1e6,
+				"total_alloc_mb":    m.TotalAlloc / 1e6,
+				"sys_mb":            m.Sys / 1e6,
+				"heap_alloc_mb":     m.HeapAlloc / 1e6,
+				"heap_sys_mb":       m.HeapSys / 1e6,
+				"heap_objects":      m.HeapObjects,
+				"gc_cycles":         m.NumGC,
 				"gc_pause_total_ms": m.PauseTotalNs / 1e6,
-				"timestamp":        time.Now().Format(time.RFC3339),
+				"timestamp":         time.Now().Format(time.RFC3339),
 			}
 			data, _ := json.MarshalIndent(info, "", "  ")
 			return string(data), nil

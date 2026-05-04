@@ -45,10 +45,10 @@ type Resource struct {
 
 // Prompt defines a prompt template registered with the MCP server.
 type Prompt struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Arguments   []PromptArg    `json:"arguments,omitempty"`
-	Handler     PromptHandler  `json:"-"`
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Arguments   []PromptArg   `json:"arguments,omitempty"`
+	Handler     PromptHandler `json:"-"`
 }
 
 // PromptArg describes an argument that a prompt template accepts.
