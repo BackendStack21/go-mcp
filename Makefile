@@ -53,3 +53,19 @@ install:
 
 # Shortcut: full CI pipeline
 ci: fmt vet test build
+
+# Docker E2E test — validates full MCP protocol
+e2e-docker:
+	bash test/e2e-docker.sh
+
+# Full E2E pipeline (unit tests + Docker + OpenCode docs)
+e2e:
+	bash test/e2e-all.sh
+
+# OpenCode integration setup
+e2e-opencode:
+	docker exec -i projects-dev bash -c "export PATH=\$$PATH:/usr/local/go/bin && cd /workspace/go-mcp && go build -o /tmp/greeter-mcp ./examples/greet/"
+	@echo "MCP server built at /tmp/greeter-mcp (inside container)"
+	@echo "Run: opencode mcp add  →  Name: greeter  →  Command: /tmp/greeter-mcp"
+	@echo "Then: opencode run 'Use the greet tool to say hello to OpenCode'"
+
