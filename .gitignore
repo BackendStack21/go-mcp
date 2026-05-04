@@ -5,3 +5,4 @@ fs-navigator
 db-explorer
 bin/
 coverage.out
+coverage.html
