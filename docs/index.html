@@ -17,7 +17,81 @@
   <link rel="stylesheet" href="https://assets.21no.de/css/buttons.css" />
   <link rel="stylesheet" href="https://assets.21no.de/css/cards.css" />
   <link rel="stylesheet" href="https://assets.21no.de/css/footer.css" />
+  <style>
+    /* === go-mcp specific styles === */
 
+    /* Nav: go badge */
+    .gopher {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: var(--radius-sm);
+      background: var(--accent-subtle); color: var(--accent);
+      font-family: var(--font-mono); font-size: 13px; font-weight: 700;
+    }
+
+    /* Stats bar */
+    .stats { display: flex; gap: 32px; justify-content: center; margin-top: 40px; flex-wrap: wrap; }
+    .stat { text-align: center; }
+    .stat .num { font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: var(--text-primary); }
+    .stat .label { font-size: 13px; color: var(--text-tertiary); margin-top: 4px; }
+
+    /* Grid */
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    @media (max-width: 900px) { .grid-3 { grid-template-columns: 1fr; } }
+
+    /* Card icon blue = accent */
+    .card-icon.blue { background: var(--accent-subtle); color: var(--accent); }
+
+    /* Use case sections */
+    .usecase {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start;
+      margin-top: 48px;
+    }
+    .usecase:first-child { margin-top: 0; }
+    @media (max-width: 768px) { .usecase { grid-template-columns: 1fr; gap: 24px; } }
+    .code-mini {
+      background: var(--bg-code); border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg); overflow: auto; padding: 20px;
+      font-size: 13px; line-height: 1.6;
+    }
+    .code-mini pre { font-family: var(--font-mono); }
+
+    /* Protocol table */
+    .protocol-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .protocol-table th {
+      text-align: left; padding: 12px 16px;
+      font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+      color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .protocol-table td { padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
+    .protocol-table tr:last-child td { border-bottom: none; }
+    .protocol-table .method { font-family: var(--font-mono); color: var(--text-primary); font-size: 13px; }
+    .protocol-table .check { color: var(--green); font-weight: 600; }
+
+    /* Install box */
+    .install-box {
+      display: inline-flex; align-items: center; gap: 12px;
+      background: var(--bg-card); border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg); padding: 16px 24px;
+      font-size: 15px; font-family: var(--font-mono);
+    }
+    .install-box .prompt { color: var(--green); font-weight: 600; }
+    .install-box code { color: var(--text-primary); }
+
+    /* Syntax highlighting */
+    .kw { color: #c084fc; }    /* purple */
+    .fn { color: #38bdf8; }    /* accent */
+    .str { color: #3dd68c; }   /* green */
+    .type { color: #f472b6; }  /* pink */
+    .pkg { color: #9b9ba3; }   /* secondary */
+    .cmt { color: #6b6b75; font-style: italic; }
+
+    /* Code blocks */
+    .code-block pre {
+      padding: 20px; overflow-x: auto; font-size: 13px; line-height: 1.7;
+      color: var(--text-primary);
+    }
+  </style>
 </head>
 <body>
 
