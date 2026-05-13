@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://go-mcp.21no.de/sitemap.xml
