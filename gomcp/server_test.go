@@ -119,12 +119,12 @@ func TestServerInitialize(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	// Send initialize
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 		inWriter.Close()
 	}()
 
@@ -134,8 +134,8 @@ func TestServerInitialize(t *testing.T) {
 	}
 
 	result := initResp["result"].(map[string]any)
-	if result["protocolVersion"] != "2024-11-05" {
-		t.Errorf("expected protocolVersion '2024-11-05', got %v", result["protocolVersion"])
+	if result["protocolVersion"] != "2025-03-26" {
+		t.Errorf("expected protocolVersion '2025-03-26', got %v", result["protocolVersion"])
 	}
 	serverInfo := result["serverInfo"].(map[string]any)
 	if serverInfo["name"] != "test-server" {
@@ -178,12 +178,12 @@ func TestToolsList(t *testing.T) {
 	})
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	// Initialize
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -234,12 +234,12 @@ func TestToolsCall(t *testing.T) {
 	})
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	// Initialize
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -269,11 +269,11 @@ func TestToolsCallUnknownTool(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -282,15 +282,19 @@ func TestToolsCallUnknownTool(t *testing.T) {
 		inWriter.Close()
 	}()
 
-	var errResp map[string]any
-	if err := json.NewDecoder(outReader).Decode(&errResp); err != nil {
-		t.Fatalf("failed to decode error response: %v", err)
+	var callResp map[string]any
+	if err := json.NewDecoder(outReader).Decode(&callResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	errObj := errResp["error"].(map[string]any)
-	code := errObj["code"].(float64)
-	if code != -32602 {
-		t.Errorf("expected error code -32602, got %v", code)
+	result := callResp["result"].(map[string]any)
+	if result["isError"] != true {
+		t.Error("expected isError=true for unknown tool")
+	}
+	content := result["content"].([]any)
+	textBlock := content[0].(map[string]any)
+	if !strings.Contains(textBlock["text"].(string), "Unknown tool") {
+		t.Errorf("expected 'Unknown tool' in message, got %q", textBlock["text"])
 	}
 }
 
@@ -302,18 +306,18 @@ func TestToolsCallHandlerError(t *testing.T) {
 	srv.AddTool(Tool{
 		Name:        "failing",
 		Description: "Always fails",
-		InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			return "", fmt.Errorf("something went wrong")
 		},
 	})
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -322,18 +326,19 @@ func TestToolsCallHandlerError(t *testing.T) {
 		inWriter.Close()
 	}()
 
-	var errResp map[string]any
-	if err := json.NewDecoder(outReader).Decode(&errResp); err != nil {
-		t.Fatalf("failed to decode error response: %v", err)
+	var callResp map[string]any
+	if err := json.NewDecoder(outReader).Decode(&callResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	errObj := errResp["error"].(map[string]any)
-	code := errObj["code"].(float64)
-	if code != -32000 {
-		t.Errorf("expected error code -32000, got %v", code)
+	result := callResp["result"].(map[string]any)
+	if result["isError"] != true {
+		t.Error("expected isError=true for handler error")
 	}
-	if errObj["message"] != "something went wrong" {
-		t.Errorf("expected 'something went wrong', got %v", errObj["message"])
+	content := result["content"].([]any)
+	textBlock := content[0].(map[string]any)
+	if !strings.Contains(textBlock["text"].(string), "something went wrong") {
+		t.Errorf("expected 'something went wrong' in message, got %q", textBlock["text"])
 	}
 }
 
@@ -355,12 +360,12 @@ func TestResourcesListAndRead(t *testing.T) {
 	})
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	// Initialize
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -398,11 +403,11 @@ func TestResourcesReadUnknown(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -442,12 +447,12 @@ func TestPromptsListAndGet(t *testing.T) {
 	})
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	// Initialize
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -494,11 +499,11 @@ func TestUnknownMethod(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -527,7 +532,7 @@ func TestDecodeError(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.runWithIO(inReader, outWriter)
+		errCh <- srv.RunWithIO(inReader, outWriter)
 	}()
 
 	// Send malformed JSON
@@ -555,12 +560,12 @@ func TestNotificationIgnored(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	// Send initialize
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	var initResp map[string]any
 	json.NewDecoder(outReader).Decode(&initResp)
@@ -592,11 +597,11 @@ func TestToolsCallInvalidParams(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -623,11 +628,11 @@ func TestResourcesReadInvalidParams(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -659,11 +664,11 @@ func TestResourcesReadHandlerError(t *testing.T) {
 	})
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -690,11 +695,11 @@ func TestPromptsGetInvalidParams(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -718,11 +723,11 @@ func TestPromptsGetUnknown(t *testing.T) {
 	srv := NewServer("test-server", "1.0.0")
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -754,11 +759,11 @@ func TestPromptsGetHandlerError(t *testing.T) {
 	})
 
 	go func() {
-		srv.runWithIO(inReader, outWriter)
+		srv.RunWithIO(inReader, outWriter)
 	}()
 
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 	}()
 	json.NewDecoder(outReader).Decode(new(map[string]any))
 
@@ -800,12 +805,12 @@ func TestEncoderWriteError(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.runWithIO(inReader, w)
+		errCh <- srv.RunWithIO(inReader, w)
 	}()
 
 	// Send initialize — encoder will fail
 	go func() {
-		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
 		inWriter.Close()
 	}()
 
@@ -823,7 +828,7 @@ func TestDefaultHandlerEncoderError(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.runWithIO(inReader, w)
+		errCh <- srv.RunWithIO(inReader, w)
 	}()
 
 	// Send unknown method — triggers default handler, encoder will fail writing error response
@@ -846,12 +851,12 @@ func TestToolsListEncoderError(t *testing.T) {
 	srv.AddTool(Tool{
 		Name:        "t",
 		Description: "d",
-		InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		InputSchema: map[string]any{"type": "object"},
 	})
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.runWithIO(inReader, w)
+		errCh <- srv.RunWithIO(inReader, w)
 	}()
 
 	go func() {
@@ -877,7 +882,7 @@ func TestResourcesListEncoderError(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.runWithIO(inReader, w)
+		errCh <- srv.RunWithIO(inReader, w)
 	}()
 
 	go func() {
@@ -905,7 +910,7 @@ func TestPromptsListEncoderError(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.runWithIO(inReader, w)
+		errCh <- srv.RunWithIO(inReader, w)
 	}()
 
 	go func() {

@@ -30,7 +30,7 @@ type InputSchema struct {
 type Tool struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
-	InputSchema InputSchema `json:"inputSchema"`
+	InputSchema any         `json:"inputSchema"`
 	Handler     ToolHandler `json:"-"`
 }
 

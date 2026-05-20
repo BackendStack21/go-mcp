@@ -14,29 +14,44 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 )
+
+// DefaultProtocolVersion is the MCP protocol version this server speaks.
+const DefaultProtocolVersion = "2025-03-26"
 
 // Server is an MCP server that communicates over stdio using JSON-RPC 2.0.
 // It handles the MCP handshake and dispatches tools, resources, and prompts
 // to registered handlers.
 type Server struct {
-	name      string
-	version   string
-	tools     map[string]Tool
-	resources map[string]Resource
-	prompts   map[string]Prompt
+	name           string
+	version        string
+	protocolVer    string
+	tools          map[string]Tool
+	resources      map[string]Resource
+	prompts        map[string]Prompt
+	initialized    bool
+	mu             sync.Mutex
 }
 
 // NewServer creates a new MCP server with the given name and version.
 // These are reported to the client during the initialize handshake.
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:      name,
-		version:   version,
-		tools:     make(map[string]Tool),
-		resources: make(map[string]Resource),
-		prompts:   make(map[string]Prompt),
+		name:        name,
+		version:     version,
+		protocolVer: DefaultProtocolVersion,
+		tools:       make(map[string]Tool),
+		resources:   make(map[string]Resource),
+		prompts:     make(map[string]Prompt),
 	}
+}
+
+// SetProtocolVersion overrides the default MCP protocol version.
+func (s *Server) SetProtocolVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protocolVer = v
 }
 
 // AddTool registers a tool with the server. Tools are callable functions
@@ -60,12 +75,12 @@ func (s *Server) AddPrompt(prompt Prompt) {
 // Run starts the MCP server using os.Stdin and os.Stdout. It blocks until
 // stdin closes. Errors are returned if reading or writing fails.
 func (s *Server) Run() error {
-	return s.runWithIO(os.Stdin, os.Stdout)
+	return s.RunWithIO(os.Stdin, os.Stdout)
 }
 
-// runWithIO is the internal entry point accepting arbitrary io.Reader/Writer
-// for testing with pipes.
-func (s *Server) runWithIO(r io.Reader, w io.Writer) error {
+// RunWithIO starts the MCP server with custom I/O readers and writers,
+// useful for testing with pipes or buffers.
+func (s *Server) RunWithIO(r io.Reader, w io.Writer) error {
 	decoder := json.NewDecoder(r)
 	encoder := json.NewEncoder(w)
 
@@ -87,6 +102,17 @@ func (s *Server) runWithIO(r io.Reader, w io.Writer) error {
 		switch req.Method {
 		case "initialize":
 			respErr = s.handleInitialize(req, encoder)
+		case "initialized":
+			// Notification — silently mark as initialized
+			s.mu.Lock()
+			s.initialized = true
+			s.mu.Unlock()
+		case "ping":
+			respErr = encoder.Encode(JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  map[string]any{},
+			})
 		case "tools/list":
 			respErr = s.handleToolsList(req, encoder)
 		case "tools/call":
@@ -114,11 +140,16 @@ func (s *Server) runWithIO(r io.Reader, w io.Writer) error {
 
 // handleInitialize responds to the MCP initialize handshake.
 func (s *Server) handleInitialize(req JSONRPCRequest, encoder *json.Encoder) error {
+	s.mu.Lock()
+	s.initialized = true
+	ver := s.protocolVer
+	s.mu.Unlock()
+
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result: map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": ver,
 			"serverInfo": map[string]any{
 				"name":    s.name,
 				"version": s.version,
@@ -135,6 +166,13 @@ func (s *Server) handleInitialize(req JSONRPCRequest, encoder *json.Encoder) err
 
 // handleToolsList returns metadata for all registered tools.
 func (s *Server) handleToolsList(req JSONRPCRequest, encoder *json.Encoder) error {
+	s.mu.Lock()
+	init := s.initialized
+	s.mu.Unlock()
+	if !init {
+		return encoder.Encode(NewJSONRPCError(req.ID, -32600, "Not initialized"))
+	}
+
 	toolList := make([]Tool, 0, len(s.tools))
 	for _, tool := range s.tools {
 		toolList = append(toolList, tool)
@@ -157,6 +195,13 @@ type toolsCallParams struct {
 
 // handleToolsCall dispatches a tool call to the registered handler.
 func (s *Server) handleToolsCall(req JSONRPCRequest, encoder *json.Encoder) error {
+	s.mu.Lock()
+	init := s.initialized
+	s.mu.Unlock()
+	if !init {
+		return encoder.Encode(NewJSONRPCError(req.ID, -32600, "Not initialized"))
+	}
+
 	var params toolsCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		errResp := NewJSONRPCError(req.ID, -32602, "Invalid params")
@@ -165,15 +210,35 @@ func (s *Server) handleToolsCall(req JSONRPCRequest, encoder *json.Encoder) erro
 
 	tool, ok := s.tools[params.Name]
 	if !ok {
-		errResp := NewJSONRPCError(req.ID, -32602, fmt.Sprintf("Unknown tool: %s", params.Name))
-		return encoder.Encode(errResp)
+		// Return in-band error per MCP convention
+		resp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Unknown tool: %s", params.Name)},
+				},
+				"isError": true,
+			},
+		}
+		return encoder.Encode(resp)
 	}
 
 	ctx := context.Background()
 	result, err := tool.Handler(ctx, params.Arguments)
 	if err != nil {
-		errResp := NewJSONRPCError(req.ID, -32000, err.Error())
-		return encoder.Encode(errResp)
+		// Return in-band error per MCP convention
+		resp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Error: %v", err)},
+				},
+				"isError": true,
+			},
+		}
+		return encoder.Encode(resp)
 	}
 
 	resp := JSONRPCResponse{
