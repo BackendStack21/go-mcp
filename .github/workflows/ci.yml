@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test against the module's minimum supported version and the latest
+        # stable release to catch version-specific regressions.
+        go-version: ['1.24.3', 'stable']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Verify gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race + coverage)
+        run: go test ./gomcp/ -race -count=1 -coverprofile=coverage.out -covermode=atomic
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out
+
+      - name: Build
+        run: go build ./...
+
+      - name: Build examples
+        # Mirrors the Makefile `examples` target. db-explorer is intentionally
+        # omitted: it is gated behind a build constraint and is not part of the
+        # default build.
+        run: |
+          go build -o /dev/null ./examples/greet/
+          go build -o /dev/null ./examples/sys-monitor/
+          go build -o /dev/null ./examples/fs-navigator/
+
+      - name: Benchmarks (compile + smoke run)
+        run: go test ./gomcp/ -run '^$' -bench . -benchmem -benchtime 10x
