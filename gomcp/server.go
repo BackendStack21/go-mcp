@@ -24,14 +24,14 @@ const DefaultProtocolVersion = "2025-03-26"
 // It handles the MCP handshake and dispatches tools, resources, and prompts
 // to registered handlers.
 type Server struct {
-	name           string
-	version        string
-	protocolVer    string
-	tools          map[string]Tool
-	resources      map[string]Resource
-	prompts        map[string]Prompt
-	initialized    bool
-	mu             sync.Mutex
+	name        string
+	version     string
+	protocolVer string
+	tools       map[string]Tool
+	resources   map[string]Resource
+	prompts     map[string]Prompt
+	initialized bool
+	mu          sync.Mutex
 }
 
 // NewServer creates a new MCP server with the given name and version.
@@ -111,7 +111,7 @@ func (s *Server) RunWithIO(r io.Reader, w io.Writer) error {
 			respErr = encoder.Encode(JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
-				Result:  map[string]any{},
+				Result:  emptyObject{},
 			})
 		case "tools/list":
 			respErr = s.handleToolsList(req, encoder)
@@ -148,16 +148,11 @@ func (s *Server) handleInitialize(req JSONRPCRequest, encoder *json.Encoder) err
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]any{
-			"protocolVersion": ver,
-			"serverInfo": map[string]any{
-				"name":    s.name,
-				"version": s.version,
-			},
-			"capabilities": map[string]any{
-				"tools":     map[string]any{},
-				"resources": map[string]any{},
-				"prompts":   map[string]any{},
+		Result: initializeResult{
+			ProtocolVersion: ver,
+			ServerInfo: serverInfo{
+				Name:    s.name,
+				Version: s.version,
 			},
 		},
 	}
@@ -180,9 +175,7 @@ func (s *Server) handleToolsList(req JSONRPCRequest, encoder *json.Encoder) erro
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]any{
-			"tools": toolList,
-		},
+		Result:  toolsListResult{Tools: toolList},
 	}
 	return encoder.Encode(resp)
 }
@@ -214,11 +207,11 @@ func (s *Server) handleToolsCall(req JSONRPCRequest, encoder *json.Encoder) erro
 		resp := JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": fmt.Sprintf("Unknown tool: %s", params.Name)},
+			Result: toolCallResult{
+				Content: []textContent{
+					{Type: "text", Text: fmt.Sprintf("Unknown tool: %s", params.Name)},
 				},
-				"isError": true,
+				IsError: true,
 			},
 		}
 		return encoder.Encode(resp)
@@ -231,11 +224,11 @@ func (s *Server) handleToolsCall(req JSONRPCRequest, encoder *json.Encoder) erro
 		resp := JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": fmt.Sprintf("Error: %v", err)},
+			Result: toolCallResult{
+				Content: []textContent{
+					{Type: "text", Text: fmt.Sprintf("Error: %v", err)},
 				},
-				"isError": true,
+				IsError: true,
 			},
 		}
 		return encoder.Encode(resp)
@@ -244,12 +237,9 @@ func (s *Server) handleToolsCall(req JSONRPCRequest, encoder *json.Encoder) erro
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]any{
-			"content": []map[string]any{
-				{
-					"type": "text",
-					"text": result,
-				},
+		Result: toolCallResult{
+			Content: []textContent{
+				{Type: "text", Text: result},
 			},
 		},
 	}
@@ -265,9 +255,7 @@ func (s *Server) handleResourcesList(req JSONRPCRequest, encoder *json.Encoder) 
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]any{
-			"resources": resourceList,
-		},
+		Result:  resourcesListResult{Resources: resourceList},
 	}
 	return encoder.Encode(resp)
 }
@@ -298,12 +286,12 @@ func (s *Server) handleResourcesRead(req JSONRPCRequest, encoder *json.Encoder) 
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]any{
-			"contents": []map[string]any{
+		Result: resourcesReadResult{
+			Contents: []resourceContent{
 				{
-					"uri":      res.URI,
-					"mimeType": res.MimeType,
-					"text":     content,
+					URI:      res.URI,
+					MimeType: res.MimeType,
+					Text:     content,
 				},
 			},
 		},
@@ -320,9 +308,7 @@ func (s *Server) handlePromptsList(req JSONRPCRequest, encoder *json.Encoder) er
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]any{
-			"prompts": promptList,
-		},
+		Result:  promptsListResult{Prompts: promptList},
 	}
 	return encoder.Encode(resp)
 }
@@ -354,9 +340,7 @@ func (s *Server) handlePromptsGet(req JSONRPCRequest, encoder *json.Encoder) err
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]any{
-			"messages": messages,
-		},
+		Result:  promptsGetResult{Messages: messages},
 	}
 	return encoder.Encode(resp)
 }

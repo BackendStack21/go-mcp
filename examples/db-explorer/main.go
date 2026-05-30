@@ -9,7 +9,9 @@
 //
 // Requires: github.com/lib/pq driver
 // Build:    go build -tags ignore -o db-explorer .
-//           or remove the build tag and: go get github.com/lib/pq
+//
+//	or remove the build tag and: go get github.com/lib/pq
+//
 // Test:     echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./db-explorer
 package main
 
@@ -21,8 +23,8 @@ import (
 	"os"
 	"strings"
 
-	_ "github.com/lib/pq"
 	"github.com/BackendStack21/go-mcp/gomcp"
+	_ "github.com/lib/pq"
 )
 
 func main() {
