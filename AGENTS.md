@@ -12,10 +12,11 @@
 stdio (os.Stdin/os.Stdout)
     │
     ▼
-json.Decoder / json.Encoder  ← newline-delimited JSON-RPC 2.0
+newline-delimited JSON-RPC 2.0  ← one message per line (MCP stdio framing)
     │
     ▼
 Server.runWithIO()  ← dispatch loop
+    ├── unparseable line     → -32700 / -32600, loop keeps serving
     ├── "initialize"         → handshake
     ├── "tools/list"         → registered tools metadata
     ├── "tools/call"         → dispatch to Tool.Handler
@@ -41,7 +42,8 @@ Server.runWithIO()  ← dispatch loop
 - **Zero dependencies.** Only Go stdlib — `encoding/json`, `bufio`, `context`, `fmt`, `io`, `os`. Never add a third-party import to go.mod.
 - **Interfaces over structs.** Handler signatures use `context.Context` + maps for extensibility. Future: typed generics.
 - **Tests use pipes.** Integration tests simulate stdio with `io.Pipe()`. E2E tests spawn a real subprocess via `os/exec`.
-- **Error codes follow JSON-RPC 2.0.** `-32601` = method not found, `-32602` = invalid params, `-32000` = application error.
+- **Error codes follow JSON-RPC 2.0.** `-32700` = parse error (broken JSON), `-32600` = invalid request (well-formed JSON that is not a Request object, id `null`), `-32601` = method not found, `-32602` = invalid params, `-32000` = application error.
+- **Bad input never kills the loop.** A malformed line is answered in-band and the server keeps serving; `RunWithIO` returns only on EOF or a read/write failure.
 - **Go naming.** Exported types are PascalCase. Unexported internals are camelCase. Test functions are `TestXxx`.
 - **Protocol version pinned.** `2024-11-05` hardcoded — update manually when MCP spec revs.
 

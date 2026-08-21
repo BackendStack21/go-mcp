@@ -9,8 +9,11 @@
 package gomcp
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,17 +83,41 @@ func (s *Server) Run() error {
 
 // RunWithIO starts the MCP server with custom I/O readers and writers,
 // useful for testing with pipes or buffers.
+//
+// The input is newline-delimited JSON-RPC 2.0 (one message per line, the
+// MCP stdio transport framing). A line that fails to parse never kills the
+// dispatch loop: it is answered with a JSON-RPC error (-32700 for broken
+// JSON, -32600 for well-formed JSON that is not a Request object) and the
+// server keeps serving. RunWithIO returns only on clean EOF (nil), a read
+// failure on r, or a write failure on w.
 func (s *Server) RunWithIO(r io.Reader, w io.Writer) error {
-	decoder := json.NewDecoder(r)
 	encoder := json.NewEncoder(w)
+	br := bufio.NewReader(r)
+	// lineBuf is reused across messages. Handlers run synchronously before
+	// the next read, so nothing retains a reference to it across iterations.
+	var lineBuf []byte
 
 	for {
-		var req JSONRPCRequest
-		if err := decoder.Decode(&req); err != nil {
+		line, err := readMessage(br, lineBuf)
+		if err != nil {
 			if err == io.EOF {
 				return nil
 			}
-			return fmt.Errorf("decode error: %w", err)
+			return fmt.Errorf("read error: %w", err)
+		}
+		lineBuf = line[:0] // reclaim capacity for the next iteration
+
+		msg := bytes.TrimSpace(line)
+		if len(msg) == 0 {
+			continue // blank separator line
+		}
+
+		var req JSONRPCRequest
+		if derr := json.Unmarshal(msg, &req); derr != nil {
+			if werr := writeDecodeError(encoder, derr); werr != nil {
+				return fmt.Errorf("write error response: %w", werr)
+			}
+			continue
 		}
 
 		// Notifications have no ID — we silently consume them
@@ -136,6 +163,45 @@ func (s *Server) RunWithIO(r io.Reader, w io.Writer) error {
 			return respErr
 		}
 	}
+}
+
+// readMessage reads one newline-terminated message from br into buf,
+// returning the bytes without the trailing newline. A final message not
+// terminated by EOF is still returned; a subsequent call then reports
+// io.EOF. Lines longer than the reader's buffer are accumulated, so there
+// is no message-size limit (matching the previous json.Decoder behavior).
+func readMessage(br *bufio.Reader, buf []byte) ([]byte, error) {
+	buf = buf[:0]
+	for {
+		chunk, err := br.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		switch err {
+		case nil:
+			return buf, nil
+		case bufio.ErrBufferFull:
+			continue // line longer than the buffer: keep accumulating
+		case io.EOF:
+			if len(buf) > 0 {
+				return buf, nil
+			}
+			return nil, io.EOF
+		default:
+			return nil, err
+		}
+	}
+}
+
+// writeDecodeError answers an unparseable inbound line per JSON-RPC 2.0:
+// -32700 (Parse error) for broken JSON, -32600 (Invalid Request) for
+// well-formed JSON that cannot be a Request object. The id is null — the
+// request was never understood, so there is nothing to correlate against.
+func writeDecodeError(encoder *json.Encoder, derr error) error {
+	code, message := -32700, "Parse error"
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(derr, &typeErr) {
+		code, message = -32600, "Invalid Request"
+	}
+	return encoder.Encode(NewJSONRPCError(nil, code, message))
 }
 
 // handleInitialize responds to the MCP initialize handshake.

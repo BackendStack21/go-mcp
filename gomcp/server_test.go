@@ -524,32 +524,172 @@ func TestUnknownMethod(t *testing.T) {
 
 // ----- Edge Cases -----
 
-func TestDecodeError(t *testing.T) {
+// ----- Malformed Input Resilience -----
+//
+// The dispatch loop must never die on a bad line: per JSON-RPC 2.0, broken
+// JSON gets -32700 and well-formed JSON that is not a Request object gets
+// -32600, and the server keeps serving subsequent messages.
+
+// readResponses decodes n JSON-RPC messages from out.
+func readResponses(t *testing.T, out *io.PipeReader, n int) []map[string]any {
+	t.Helper()
+	var msgs []map[string]any
+	for i := 0; i < n; i++ {
+		var m map[string]any
+		if err := json.NewDecoder(out).Decode(&m); err != nil {
+			t.Fatalf("failed to decode response %d/%d: %v", i+1, n, err)
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs
+}
+
+func TestParseErrorKeepsServing(t *testing.T) {
 	inReader, inWriter := io.Pipe()
 	outReader, outWriter := io.Pipe()
 
 	srv := NewServer("test-server", "1.0.0")
+	done := make(chan error, 1)
+	go func() { done <- srv.RunWithIO(inReader, outWriter) }()
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- srv.RunWithIO(inReader, outWriter)
-	}()
-
-	// Send malformed JSON
 	go func() {
 		inWriter.Write([]byte(`this is not json` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"ping"}` + "\n"))
 		inWriter.Close()
 	}()
 
-	// Drain the output pipe to avoid blocking
-	go io.Copy(io.Discard, outReader)
-
-	err := <-errCh
-	if err == nil {
-		t.Fatal("expected decode error, got nil")
+	msgs := readResponses(t, outReader, 2)
+	errObj := msgs[0]["error"].(map[string]any)
+	if errObj["code"].(float64) != -32700 {
+		t.Errorf("expected code -32700, got %v", errObj["code"])
 	}
-	if !strings.Contains(err.Error(), "decode error") {
-		t.Errorf("expected 'decode error' in message, got: %v", err)
+	if msgs[0]["id"] != nil {
+		t.Errorf("expected id null for parse error, got %v", msgs[0]["id"])
+	}
+	if msgs[1]["id"].(float64) != 2 {
+		t.Errorf("server did not stay alive after parse error; got %v", msgs[1])
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("RunWithIO: %v", err)
+	}
+}
+
+func TestTypeMismatchKeepsServing(t *testing.T) {
+	// Regression: {"jsonrpc":1,...} used to kill the dispatch loop with a
+	// fatal decode error, leaving the request unanswered and every later
+	// message stranded behind a blocked writer.
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	done := make(chan error, 1)
+	go func() { done <- srv.RunWithIO(inReader, outWriter) }()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":1,"id":2,"method":"ping"}` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":3,"method":"ping"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	msgs := readResponses(t, outReader, 2)
+	errObj := msgs[0]["error"].(map[string]any)
+	if errObj["code"].(float64) != -32600 {
+		t.Errorf("expected code -32600, got %v", errObj["code"])
+	}
+	if msgs[0]["id"] != nil {
+		t.Errorf("expected id null, got %v", msgs[0]["id"])
+	}
+	if msgs[1]["id"].(float64) != 3 {
+		t.Errorf("server did not answer the valid follow-up request; got %v", msgs[1])
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("RunWithIO: %v", err)
+	}
+}
+
+func TestNonObjectRequestKeepsServing(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	done := make(chan error, 1)
+	go func() { done <- srv.RunWithIO(inReader, outWriter) }()
+
+	go func() {
+		inWriter.Write([]byte(`[1,2,3]` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":7,"method":"ping"}` + "\n"))
+		inWriter.Close()
+	}()
+
+	msgs := readResponses(t, outReader, 2)
+	errObj := msgs[0]["error"].(map[string]any)
+	if errObj["code"].(float64) != -32600 {
+		t.Errorf("expected code -32600, got %v", errObj["code"])
+	}
+	if msgs[1]["id"].(float64) != 7 {
+		t.Errorf("server did not stay alive after non-object request; got %v", msgs[1])
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("RunWithIO: %v", err)
+	}
+}
+
+func TestMultipleBadLinesThenGood(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	done := make(chan error, 1)
+	go func() { done <- srv.RunWithIO(inReader, outWriter) }()
+
+	go func() {
+		inWriter.Write([]byte("{oops\n"))
+		inWriter.Write([]byte("\n")) // blank separator: skipped silently
+		inWriter.Write([]byte(`"just a string"` + "\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":9,"method":"ping"}` + "\r\n"))
+		inWriter.Close()
+	}()
+
+	// "{oops" → -32700; blank line → nothing; string → -32600; CRLF ping → pong.
+	msgs := readResponses(t, outReader, 3)
+	if code := msgs[0]["error"].(map[string]any)["code"].(float64); code != -32700 {
+		t.Errorf("expected -32700 for broken JSON, got %v", code)
+	}
+	if code := msgs[1]["error"].(map[string]any)["code"].(float64); code != -32600 {
+		t.Errorf("expected -32600 for non-request JSON, got %v", code)
+	}
+	if msgs[2]["id"].(float64) != 9 {
+		t.Errorf("CRLF-terminated request was not served; got %v", msgs[2])
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("RunWithIO: %v", err)
+	}
+}
+
+func TestFinalLineWithoutNewline(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	done := make(chan error, 1)
+	go func() { done <- srv.RunWithIO(inReader, outWriter) }()
+
+	go func() {
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)) // no trailing \n
+		inWriter.Close()
+	}()
+
+	msgs := readResponses(t, outReader, 1)
+	if msgs[0]["id"].(float64) != 1 {
+		t.Errorf("final unterminated message was dropped; got %v", msgs[0])
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("RunWithIO should return nil on clean EOF, got: %v", err)
 	}
 }
 
