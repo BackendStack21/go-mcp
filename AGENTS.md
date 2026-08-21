@@ -44,6 +44,7 @@ Server.runWithIO()  ← dispatch loop
 - **Tests use pipes.** Integration tests simulate stdio with `io.Pipe()`. E2E tests spawn a real subprocess via `os/exec`.
 - **Error codes follow JSON-RPC 2.0.** `-32700` = parse error (broken JSON), `-32600` = invalid request (well-formed JSON that is not a Request object, id `null`), `-32601` = method not found, `-32602` = invalid params, `-32000` = application error.
 - **Bad input never kills the loop.** A malformed line is answered in-band and the server keeps serving; `RunWithIO` returns only on EOF or a read/write failure.
+- **Inbound messages are size-capped.** One line may carry at most `Server.MaxRequestBytes` bytes (default `DefaultMaxRequestBytes`, 10 MiB; negative disables — not recommended). An oversized line is answered with `-32600` (id null), its remainder discarded, and the loop keeps serving — a single line can never exhaust memory.
 - **Go naming.** Exported types are PascalCase. Unexported internals are camelCase. Test functions are `TestXxx`.
 - **Protocol version pinned.** `2024-11-05` hardcoded — update manually when MCP spec revs.
 
