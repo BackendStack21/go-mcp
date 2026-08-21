@@ -1,6 +1,7 @@
 package gomcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1061,5 +1062,92 @@ func TestPromptsListEncoderError(t *testing.T) {
 	err := <-errCh
 	if err == nil {
 		t.Fatal("expected encoder write error, got nil")
+	}
+}
+
+// ----- Request size cap (2026-08 audit) -----
+
+// An oversized line (no newline within MaxRequestBytes) must be rejected
+// in-band with -32600 and the remainder of the line discarded, so the
+// dispatch loop survives and the next well-formed message is still served.
+// Before the fix, readMessage accumulated the line unboundedly — a client
+// could OOM the server with a single multi-gigabyte line.
+func TestRunWithIO_RequestSizeCap(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	srv.MaxRequestBytes = 1024
+
+	go func() {
+		srv.RunWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		// Oversized line: 8 KiB of junk followed by a valid request on the
+		// next line.
+		inWriter.Write(bytes.Repeat([]byte("a"), 8*1024))
+		inWriter.Write([]byte("\n"))
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}` + "\n"))
+		inWriter.Close()
+	}()
+
+	dec := json.NewDecoder(outReader)
+
+	var errResp map[string]any
+	if err := dec.Decode(&errResp); err != nil {
+		t.Fatalf("read first response: %v", err)
+	}
+	if errObj, ok := errResp["error"].(map[string]any); !ok {
+		t.Fatalf("expected an error object, got: %v", errResp)
+	} else {
+		if code, _ := errObj["code"].(float64); code != -32600 {
+			t.Errorf("error code = %v, want -32600", errObj["code"])
+		}
+		if msg, _ := errObj["message"].(string); !strings.Contains(msg, "maximum size") {
+			t.Errorf("error message = %q, want it to name the maximum size", msg)
+		}
+	}
+	if id, present := errResp["id"]; !present || id != nil {
+		t.Errorf("error response id = %v (present=%v), want null", id, present)
+	}
+
+	// The loop must keep serving after the oversized line.
+	var initResp map[string]any
+	if err := dec.Decode(&initResp); err != nil {
+		t.Fatalf("server did not survive the oversized line: %v", err)
+	}
+	if result, ok := initResp["result"].(map[string]any); !ok || result["serverInfo"] == nil {
+		t.Fatalf("expected initialize result after oversized line, got: %v", initResp)
+	}
+}
+
+// A line under the cap is served normally, and a zero MaxRequestBytes
+// selects the default cap rather than disabling the limit.
+func TestRunWithIO_UnderCapStillServed(t *testing.T) {
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+
+	srv := NewServer("test-server", "1.0.0")
+	srv.MaxRequestBytes = 0 // default (10 MiB) — a 4 KiB line must pass
+
+	go func() {
+		srv.RunWithIO(inReader, outWriter)
+	}()
+
+	go func() {
+		payload := bytes.Repeat([]byte(" "), 4*1024)
+		inWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{`))
+		inWriter.Write(payload)
+		inWriter.Write([]byte("}}\n"))
+		inWriter.Close()
+	}()
+
+	var resp map[string]any
+	if err := json.NewDecoder(outReader).Decode(&resp); err != nil {
+		t.Fatalf("read ping response: %v", err)
+	}
+	if _, ok := resp["result"]; !ok {
+		t.Fatalf("expected ping result, got: %v", resp)
 	}
 }

@@ -23,6 +23,17 @@ import (
 // DefaultProtocolVersion is the MCP protocol version this server speaks.
 const DefaultProtocolVersion = "2025-03-26"
 
+// DefaultMaxRequestBytes caps a single inbound JSON-RPC message when
+// Server.MaxRequestBytes is unset. 10 MiB matches what a typical MCP client
+// accepts for a response — requests larger than that are almost certainly
+// hostile or malformed, and reading them unboundedly lets one line OOM the
+// server process.
+const DefaultMaxRequestBytes int64 = 10 << 20
+
+// errMessageTooLarge reports that an inbound line exceeded the configured
+// size cap. The rest of the line has already been discarded by readMessage.
+var errMessageTooLarge = errors.New("message exceeds maximum size")
+
 // Server is an MCP server that communicates over stdio using JSON-RPC 2.0.
 // It handles the MCP handshake and dispatches tools, resources, and prompts
 // to registered handlers.
@@ -35,6 +46,13 @@ type Server struct {
 	prompts     map[string]Prompt
 	initialized bool
 	mu          sync.Mutex
+
+	// MaxRequestBytes caps one inbound JSON-RPC message (one newline-
+	// delimited line). Zero selects DefaultMaxRequestBytes; a negative value
+	// disables the cap (not recommended — a single unbounded line can
+	// exhaust memory). An oversized message is answered in-band with a
+	// -32600 error (id null) and the dispatch loop keeps serving.
+	MaxRequestBytes int64
 }
 
 // NewServer creates a new MCP server with the given name and version.
@@ -97,11 +115,28 @@ func (s *Server) RunWithIO(r io.Reader, w io.Writer) error {
 	// the next read, so nothing retains a reference to it across iterations.
 	var lineBuf []byte
 
+	s.mu.Lock()
+	maxReq := s.MaxRequestBytes
+	s.mu.Unlock()
+	if maxReq == 0 {
+		maxReq = DefaultMaxRequestBytes
+	}
+
 	for {
-		line, err := readMessage(br, lineBuf)
+		line, err := readMessage(br, lineBuf, maxReq)
 		if err != nil {
 			if err == io.EOF {
 				return nil
+			}
+			if errors.Is(err, errMessageTooLarge) {
+				// Bad input never kills the loop: answer in-band and keep
+				// serving. The oversized line is unparseable by definition,
+				// so the response carries a null id.
+				if werr := encoder.Encode(NewJSONRPCError(nil, -32600,
+					fmt.Sprintf("Invalid Request: message exceeds maximum size of %d bytes", maxReq))); werr != nil {
+					return fmt.Errorf("write error response: %w", werr)
+				}
+				continue
 			}
 			return fmt.Errorf("read error: %w", err)
 		}
@@ -167,13 +202,23 @@ func (s *Server) RunWithIO(r io.Reader, w io.Writer) error {
 
 // readMessage reads one newline-terminated message from br into buf,
 // returning the bytes without the trailing newline. A final message not
-// terminated by EOF is still returned; a subsequent call then reports
-// io.EOF. Lines longer than the reader's buffer are accumulated, so there
-// is no message-size limit (matching the previous json.Decoder behavior).
-func readMessage(br *bufio.Reader, buf []byte) ([]byte, error) {
+// terminated by newline is still returned at EOF; a subsequent call then
+// reports io.EOF. Lines longer than the reader's buffer are accumulated up
+// to max bytes; beyond that the remainder of the line is discarded
+// (constant memory) and errMessageTooLarge is returned, so a hostile
+// client cannot exhaust memory with a single oversized line.
+func readMessage(br *bufio.Reader, buf []byte, max int64) ([]byte, error) {
 	buf = buf[:0]
 	for {
 		chunk, err := br.ReadSlice('\n')
+		if max > 0 && int64(len(buf))+int64(len(chunk)) > max {
+			// Discard through the end of this line so the stream stays
+			// framed and the next message parses normally.
+			for err == bufio.ErrBufferFull {
+				_, err = br.ReadSlice('\n')
+			}
+			return nil, errMessageTooLarge
+		}
 		buf = append(buf, chunk...)
 		switch err {
 		case nil:
