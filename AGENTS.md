@@ -15,15 +15,20 @@ stdio (os.Stdin/os.Stdout)
 newline-delimited JSON-RPC 2.0  ← one message per line (MCP stdio framing)
     │
     ▼
-Server.runWithIO()  ← dispatch loop
-    ├── unparseable line     → -32700 / -32600, loop keeps serving
-    ├── "initialize"         → handshake
-    ├── "tools/list"         → registered tools metadata
-    ├── "tools/call"         → dispatch to Tool.Handler
-    ├── "resources/list"     → registered resources metadata
-    ├── "resources/read"     → dispatch to Resource.Handler
-    ├── "prompts/list"       → registered prompts metadata
-    └── "prompts/get"        → dispatch to Prompt.Handler
+Server.run()  ← dispatch loop
+    ├── unparseable line              → -32700 / -32600, loop keeps serving
+    ├── oversized line                → -32600, remainder discarded
+    ├── "initialize"                  → legacy handshake (version negotiated)
+    ├── "notifications/initialized"   → consumed silently
+    ├── "server/discover"             → 2026-07-28 capability probe
+    ├── "ping"                        → empty result (legacy clients)
+    ├── "tools/list"                  → registered tools metadata
+    ├── "tools/call"                  → dispatch to Tool.Handler
+    ├── "resources/list"              → registered resources metadata
+    ├── "resources/read"              → dispatch to Resource.Handler
+    ├── "resources/templates/list"    → empty catalog (spec-compliant)
+    ├── "prompts/list"                → registered prompts metadata
+    └── "prompts/get"                 → dispatch to Prompt.Handler
 ```
 
 ## Code Map
@@ -32,8 +37,11 @@ Server.runWithIO()  ← dispatch loop
 |------|---------|
 | `gomcp/types.go` | Tool, Resource, Prompt, InputSchema, handler signatures |
 | `gomcp/jsonrpc.go` | JSON-RPC 2.0 request/response/error types |
+| `gomcp/protocol.go` | Protocol versions, `_meta` negotiation, pagination |
+| `gomcp/path.go` | `SafeJoin` — path-traversal-safe filesystem helper |
 | `gomcp/server.go` | Server struct, Run(), all JSON-RPC method handlers |
 | `gomcp/server_test.go` | Unit + integration tests (pipe-based) |
+| `gomcp/protocol_test.go` | 2026-07-28 + security tests |
 | `gomcp/e2e_test.go` | Subprocess E2E test |
 | `examples/greet/main.go` | Canonical example MCP server |
 
@@ -46,7 +54,8 @@ Server.runWithIO()  ← dispatch loop
 - **Bad input never kills the loop.** A malformed line is answered in-band and the server keeps serving; `RunWithIO` returns only on EOF or a read/write failure.
 - **Inbound messages are size-capped.** One line may carry at most `Server.MaxRequestBytes` bytes (default `DefaultMaxRequestBytes`, 10 MiB; negative disables — not recommended). An oversized line is answered with `-32600` (id null), its remainder discarded, and the loop keeps serving — a single line can never exhaust memory.
 - **Go naming.** Exported types are PascalCase. Unexported internals are camelCase. Test functions are `TestXxx`.
-- **Protocol version pinned.** `2024-11-05` hardcoded — update manually when MCP spec revs.
+- **Protocol versions.** Default is `2026-07-28`. Legacy `initialize` still works and echoes `2024-11-05`, `2025-03-26`, or `2025-11-25` when the client asks for them. 2026-only fields (`resultType`, `ttlMs`, `cacheScope`, result `_meta`) are emitted only when the request declares `2026-07-28`.
+- **Handlers must not kill the loop.** A panicking or timed-out handler is answered in-band; registration maps are mutex-protected.
 
 ## Testing
 

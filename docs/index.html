@@ -212,7 +212,7 @@
         <div class="label">dependencies</div>
       </div>
       <div class="stat">
-        <div class="num">8</div>
+        <div class="num">11</div>
         <div class="label">MCP methods</div>
       </div>
       <div class="stat">
@@ -367,7 +367,7 @@
   <div class="container">
     <div class="section-label">Protocol Support</div>
     <h2>Full MCP coverage</h2>
-    <p class="lead">All eight MCP methods implemented. Not a subset. Not a work-in-progress. Complete.</p>
+    <p class="lead">2026-07-28 plus the legacy initialize handshake. Not a subset. Not a work-in-progress. Backward compatible.</p>
 
     <div style="background: var(--bg-card); border: 1px solid var(--border-card); border-radius: var(--radius-lg); overflow: hidden; margin-top: 32px;">
       <table class="protocol-table">
@@ -375,12 +375,15 @@
           <tr><th>Method</th><th>Description</th><th>Status</th></tr>
         </thead>
         <tbody>
-          <tr><td class="method">initialize</td><td>MCP handshake — reports server name, version, capabilities</td><td class="check">✓</td></tr>
+          <tr><td class="method">server/discover</td><td>2026-07-28 capability probe — versions, identity, cache hints</td><td class="check">✓</td></tr>
+          <tr><td class="method">initialize</td><td>Legacy handshake — reports server name, version, capabilities</td><td class="check">✓</td></tr>
           <tr><td class="method">notifications/initialized</td><td>Client ready notification — consumed silently</td><td class="check">✓</td></tr>
+          <tr><td class="method">ping</td><td>Liveness check kept for older clients</td><td class="check">✓</td></tr>
           <tr><td class="method">tools/list</td><td>Returns metadata for all registered tools</td><td class="check">✓</td></tr>
           <tr><td class="method">tools/call</td><td>Dispatches a call to the matching tool handler</td><td class="check">✓</td></tr>
           <tr><td class="method">resources/list</td><td>Returns metadata for all registered resources</td><td class="check">✓</td></tr>
           <tr><td class="method">resources/read</td><td>Reads a resource by URI</td><td class="check">✓</td></tr>
+          <tr><td class="method">resources/templates/list</td><td>Empty catalog — spec-compliant probe response</td><td class="check">✓</td></tr>
           <tr><td class="method">prompts/list</td><td>Returns metadata for all registered prompts</td><td class="check">✓</td></tr>
           <tr><td class="method">prompts/get</td><td>Builds a prompt from arguments</td><td class="check">✓</td></tr>
         </tbody>

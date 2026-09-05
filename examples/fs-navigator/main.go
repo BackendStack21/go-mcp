@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,8 +40,8 @@ func main() {
 			Required: []string{"path"},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			dirPath := args["path"].(string)
-			fullPath, err := safePath(root, dirPath)
+			dirPath, _ := args["path"].(string)
+			fullPath, err := gomcp.SafeJoin(root, dirPath)
 			if err != nil {
 				return "", err
 			}
@@ -91,19 +92,25 @@ func main() {
 			Required: []string{"path"},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			filePath := args["path"].(string)
-			fullPath, err := safePath(root, filePath)
+			filePath, _ := args["path"].(string)
+			fullPath, err := gomcp.SafeJoin(root, filePath)
 			if err != nil {
 				return "", err
 			}
 
-			data, err := os.ReadFile(fullPath)
+			f, err := os.Open(fullPath)
 			if err != nil {
 				return "", fmt.Errorf("read file: %w", err)
 			}
+			defer f.Close()
 
-			if len(data) > 100*1024 { // 100KB limit
-				return fmt.Sprintf("(file too large: %d bytes, showing first 100KB)\n\n%s", len(data), string(data[:100*1024])), nil
+			const limit = 100 * 1024
+			data, err := io.ReadAll(io.LimitReader(f, limit+1))
+			if err != nil {
+				return "", fmt.Errorf("read file: %w", err)
+			}
+			if len(data) > limit {
+				return fmt.Sprintf("(file too large, showing first %d bytes)\n\n%s", limit, data[:limit]), nil
 			}
 			return string(data), nil
 		},
@@ -121,12 +128,19 @@ func main() {
 			Required: []string{"pattern"},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			pattern := args["pattern"].(string)
+			pattern, _ := args["pattern"].(string)
+			if strings.Contains(pattern, "..") {
+				return "", fmt.Errorf("invalid pattern")
+			}
 
+			const maxMatches = 200
 			var matches []string
 			err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					return nil // skip inaccessible files
+				}
+				if info.Mode()&os.ModeSymlink != 0 {
+					return nil
 				}
 				relPath, _ := filepath.Rel(root, path)
 
@@ -137,6 +151,9 @@ func main() {
 
 				matched, _ := filepath.Match(pattern, info.Name())
 				if matched {
+					if len(matches) >= maxMatches {
+						return filepath.SkipAll
+					}
 					matches = append(matches, relPath)
 				}
 				return nil
@@ -213,22 +230,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// safePath resolves a user-supplied relative path against the root,
-// preventing path traversal attacks.
-func safePath(root, userPath string) (string, error) {
-	if strings.Contains(userPath, "..") {
-		return "", fmt.Errorf("path traversal not allowed: %s", userPath)
-	}
-
-	fullPath := filepath.Join(root, userPath)
-	cleaned := filepath.Clean(fullPath)
-
-	// Ensure we're still under root
-	if !strings.HasPrefix(cleaned, filepath.Clean(root)) {
-		return "", fmt.Errorf("path escapes root directory: %s", userPath)
-	}
-
-	return cleaned, nil
 }

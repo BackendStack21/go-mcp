@@ -1,6 +1,9 @@
 package gomcp
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ToolHandler is the function signature for tool implementations.
 // Receives the request context and parsed arguments, returns a text result.
@@ -38,10 +41,29 @@ type serverCapabilities struct {
 }
 
 // initializeResult is the result payload for the initialize handshake.
+// The shape is the pre-2026 handshake so existing clients keep working.
 type initializeResult struct {
 	ProtocolVersion string             `json:"protocolVersion"`
 	ServerInfo      serverInfo         `json:"serverInfo"`
 	Capabilities    serverCapabilities `json:"capabilities"`
+	Instructions    string             `json:"instructions,omitempty"`
+}
+
+// resultMeta is the 2026-07-28 result _meta object. Servers SHOULD identify
+// themselves on every modern result (SEP-2575).
+type resultMeta struct {
+	ServerInfo serverInfo `json:"io.modelcontextprotocol/serverInfo"`
+}
+
+// discoverResult is the result payload for server/discover (2026-07-28).
+type discoverResult struct {
+	ResultType        string             `json:"resultType"`
+	SupportedVersions []string           `json:"supportedVersions"`
+	Capabilities      serverCapabilities `json:"capabilities"`
+	Instructions      string             `json:"instructions,omitempty"`
+	TTLMs             int64              `json:"ttlMs"`
+	CacheScope        string             `json:"cacheScope"`
+	Meta              resultMeta         `json:"_meta"`
 }
 
 // textContent is a single text content block returned by tool calls.
@@ -51,20 +73,56 @@ type textContent struct {
 }
 
 // toolCallResult is the result payload for a tools/call response. IsError is
-// omitted on success and set to true for in-band tool errors.
+// omitted on success and set to true for in-band tool errors. ResultType and
+// Meta are populated only for 2026-07-28 clients.
 type toolCallResult struct {
-	Content []textContent `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
+	Content    []textContent `json:"content"`
+	IsError    bool          `json:"isError,omitempty"`
+	ResultType string        `json:"resultType,omitempty"`
+	Meta       *resultMeta   `json:"_meta,omitempty"`
 }
 
 // toolsListResult is the result payload for tools/list.
+// TTLMs is a pointer so a zero value is still emitted for 2026-07-28
+// clients (omitempty on int64 would drop ttlMs: 0).
 type toolsListResult struct {
-	Tools []Tool `json:"tools"`
+	Tools      []Tool      `json:"tools"`
+	NextCursor string      `json:"nextCursor,omitempty"`
+	ResultType string      `json:"resultType,omitempty"`
+	TTLMs      *int64      `json:"ttlMs,omitempty"`
+	CacheScope string      `json:"cacheScope,omitempty"`
+	Meta       *resultMeta `json:"_meta,omitempty"`
 }
 
 // resourcesListResult is the result payload for resources/list.
 type resourcesListResult struct {
-	Resources []Resource `json:"resources"`
+	Resources  []Resource  `json:"resources"`
+	NextCursor string      `json:"nextCursor,omitempty"`
+	ResultType string      `json:"resultType,omitempty"`
+	TTLMs      *int64      `json:"ttlMs,omitempty"`
+	CacheScope string      `json:"cacheScope,omitempty"`
+	Meta       *resultMeta `json:"_meta,omitempty"`
+}
+
+// resourceTemplatesListResult is the result payload for resources/templates/list.
+type resourceTemplatesListResult struct {
+	ResourceTemplates []resourceTemplate `json:"resourceTemplates"`
+	NextCursor        string             `json:"nextCursor,omitempty"`
+	ResultType        string             `json:"resultType,omitempty"`
+	TTLMs             *int64             `json:"ttlMs,omitempty"`
+	CacheScope        string             `json:"cacheScope,omitempty"`
+	Meta              *resultMeta        `json:"_meta,omitempty"`
+}
+
+// resourceTemplate is a URI-template resource entry. This server does not
+// yet register templates; the type exists so resources/templates/list can
+// return a spec-compliant empty catalog instead of -32601.
+type resourceTemplate struct {
+	URITemplate string `json:"uriTemplate"`
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
 }
 
 // resourceContent is a single content block returned by resources/read.
@@ -76,17 +134,28 @@ type resourceContent struct {
 
 // resourcesReadResult is the result payload for resources/read.
 type resourcesReadResult struct {
-	Contents []resourceContent `json:"contents"`
+	Contents   []resourceContent `json:"contents"`
+	ResultType string            `json:"resultType,omitempty"`
+	TTLMs      *int64            `json:"ttlMs,omitempty"`
+	CacheScope string            `json:"cacheScope,omitempty"`
+	Meta       *resultMeta       `json:"_meta,omitempty"`
 }
 
 // promptsListResult is the result payload for prompts/list.
 type promptsListResult struct {
-	Prompts []Prompt `json:"prompts"`
+	Prompts    []Prompt    `json:"prompts"`
+	NextCursor string      `json:"nextCursor,omitempty"`
+	ResultType string      `json:"resultType,omitempty"`
+	TTLMs      *int64      `json:"ttlMs,omitempty"`
+	CacheScope string      `json:"cacheScope,omitempty"`
+	Meta       *resultMeta `json:"_meta,omitempty"`
 }
 
 // promptsGetResult is the result payload for prompts/get.
 type promptsGetResult struct {
-	Messages []PromptMessage `json:"messages"`
+	Messages   []PromptMessage `json:"messages"`
+	ResultType string          `json:"resultType,omitempty"`
+	Meta       *resultMeta     `json:"_meta,omitempty"`
 }
 
 // Property describes a single input parameter for a tool or prompt argument.
@@ -102,29 +171,53 @@ type InputSchema struct {
 	Required   []string            `json:"required,omitempty"`
 }
 
+// ToolAnnotations are optional hints about a tool's behavior. Clients must
+// treat them as untrusted hints, never as a security boundary.
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
+	DestructiveHint bool   `json:"destructiveHint,omitempty"`
+	IdempotentHint  bool   `json:"idempotentHint,omitempty"`
+	OpenWorldHint   bool   `json:"openWorldHint,omitempty"`
+}
+
 // Tool defines a callable tool registered with the MCP server.
 type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	InputSchema any         `json:"inputSchema"`
-	Handler     ToolHandler `json:"-"`
+	Name         string           `json:"name"`
+	Title        string           `json:"title,omitempty"`
+	Description  string           `json:"description,omitempty"`
+	InputSchema  any              `json:"inputSchema"`
+	OutputSchema any              `json:"outputSchema,omitempty"`
+	Annotations  *ToolAnnotations `json:"annotations,omitempty"`
+	Handler      ToolHandler      `json:"-"`
+	// Timeout overrides Server.HandlerTimeout for this tool. Zero means
+	// inherit; a negative value disables the timeout for this tool.
+	Timeout time.Duration `json:"-"`
 }
 
 // Resource defines a readable resource registered with the MCP server.
 type Resource struct {
 	URI         string          `json:"uri"`
 	Name        string          `json:"name"`
+	Title       string          `json:"title,omitempty"`
 	Description string          `json:"description,omitempty"`
 	MimeType    string          `json:"mimeType,omitempty"`
 	Handler     ResourceHandler `json:"-"`
+	// Timeout overrides Server.HandlerTimeout for this resource. Zero
+	// means inherit; a negative value disables the timeout.
+	Timeout time.Duration `json:"-"`
 }
 
 // Prompt defines a prompt template registered with the MCP server.
 type Prompt struct {
 	Name        string        `json:"name"`
+	Title       string        `json:"title,omitempty"`
 	Description string        `json:"description,omitempty"`
 	Arguments   []PromptArg   `json:"arguments,omitempty"`
 	Handler     PromptHandler `json:"-"`
+	// Timeout overrides Server.HandlerTimeout for this prompt. Zero means
+	// inherit; a negative value disables the timeout.
+	Timeout time.Duration `json:"-"`
 }
 
 // PromptArg describes an argument that a prompt template accepts.

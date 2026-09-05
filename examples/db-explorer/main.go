@@ -56,8 +56,14 @@ func main() {
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			query := args["query"].(string)
 			trimmed := strings.TrimSpace(query)
-			if !strings.HasPrefix(strings.ToUpper(trimmed), "SELECT") {
+			upper := strings.ToUpper(trimmed)
+			if !strings.HasPrefix(upper, "SELECT") {
 				return "", fmt.Errorf("only SELECT queries are allowed. Received: %s", trimmed[:min(50, len(trimmed))])
+			}
+			// Reject stacked statements. This is not a SQL parser — callers
+			// must still treat the tool as a trust boundary.
+			if strings.Contains(trimmed, ";") {
+				return "", fmt.Errorf("multiple statements are not allowed")
 			}
 
 			rows, err := db.QueryContext(ctx, query)
