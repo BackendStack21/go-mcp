@@ -688,4 +688,9 @@ func TestPaginate(t *testing.T) {
 	if _, _, err := paginate(items, "9", 2); err == nil {
 		t.Fatal("expected cursor past end to fail")
 	}
+	// A huge page size must not overflow start+pageSize and panic.
+	page, next, err = paginate(items, "1", int(^uint(0)>>1))
+	if err != nil || next != "" || strings.Join(page, "") != "bc" {
+		t.Fatalf("max page size: %v %q %v", page, next, err)
+	}
 }

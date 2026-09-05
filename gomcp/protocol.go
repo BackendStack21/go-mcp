@@ -135,7 +135,7 @@ func negotiateProtocolVersion(requested, fallback string) string {
 // shape. Legacy clients omit _meta entirely; their responses stay in the
 // pre-2026 shape so extra fields cannot trip a strict decoder.
 func speaks2026(params json.RawMessage) bool {
-	return protocolVersionFromParams(params) == ProtocolVersion20260728
+	return metaProtocolVersion(params) == ProtocolVersion20260728
 }
 
 // paginate returns items[start:end] and an opaque next cursor. pageSize
@@ -151,7 +151,8 @@ func paginate[T any](items []T, cursor string, pageSize int) (page []T, next str
 		}
 		start = n
 	}
-	if pageSize <= 0 || start+pageSize >= len(items) {
+	rest := len(items) - start
+	if pageSize <= 0 || pageSize >= rest {
 		return items[start:], "", nil
 	}
 	end := start + pageSize
