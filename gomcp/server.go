@@ -54,10 +54,11 @@ type Server struct {
 	// -32600 error (id null) and the dispatch loop keeps serving.
 	MaxRequestBytes int64
 
-	// HandlerTimeout bounds a single tool, resource, or prompt handler.
-	// Zero disables the timeout (historical behavior). A timed-out
-	// handler is cancelled via context and reported as an in-band error;
-	// the dispatch loop keeps serving.
+	// HandlerTimeout is a cooperative bound on a single tool, resource,
+	// or prompt handler. Zero disables it (historical behavior). The
+	// handler's context is cancelled when the deadline hits; a handler
+	// that ignores ctx (blocking syscall, busy loop) is not preempted
+	// and will still stall the sequential dispatch loop.
 	HandlerTimeout time.Duration
 
 	// ListPageSize caps items returned by tools/list, resources/list, and
@@ -632,7 +633,8 @@ func (s *Server) handleToolsCall(ctx context.Context, req JSONRPCRequest, encode
 func (s *Server) invokeTool(ctx context.Context, tool Tool, args map[string]any) (result string, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			err = fmt.Errorf("tool handler panicked: %v", rec)
+			fmt.Fprintf(os.Stderr, "gomcp: tool %q panicked: %v\n", tool.Name, rec)
+			err = fmt.Errorf("tool handler panicked")
 		}
 	}()
 	if tool.Handler == nil {
@@ -736,7 +738,8 @@ func (s *Server) handleResourcesRead(ctx context.Context, req JSONRPCRequest, en
 func (s *Server) invokeResource(ctx context.Context, res Resource) (content string, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			err = fmt.Errorf("resource handler panicked: %v", rec)
+			fmt.Fprintf(os.Stderr, "gomcp: resource %q panicked: %v\n", res.URI, rec)
+			err = fmt.Errorf("resource handler panicked")
 		}
 	}()
 	if res.Handler == nil {
@@ -820,7 +823,8 @@ func (s *Server) handlePromptsGet(ctx context.Context, req JSONRPCRequest, encod
 func (s *Server) invokePrompt(ctx context.Context, prompt Prompt, args map[string]any) (messages []PromptMessage, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			err = fmt.Errorf("prompt handler panicked: %v", rec)
+			fmt.Fprintf(os.Stderr, "gomcp: prompt %q panicked: %v\n", prompt.Name, rec)
+			err = fmt.Errorf("prompt handler panicked")
 		}
 	}()
 	if prompt.Handler == nil {

@@ -364,6 +364,9 @@ func TestHandlerPanicKeepsServing(t *testing.T) {
 	if !strings.Contains(text, "panicked") {
 		t.Errorf("error text = %q", text)
 	}
+	if strings.Contains(text, "kaboom") {
+		t.Errorf("panic value must not leak to the client: %q", text)
+	}
 	if msgs[1]["id"].(float64) != 2 {
 		t.Errorf("server did not survive handler panic: %v", msgs[1])
 	}

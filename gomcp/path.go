@@ -13,6 +13,10 @@ import (
 // root itself.
 //
 // Use this when a tool argument is a filesystem path supplied by a model.
+//
+// SafeJoin is a check, not an open: a concurrent writer can still replace a
+// path component between this call and a later os.Open. For hostile trees,
+// open with O_NOFOLLOW (or an openat walk) after joining.
 func SafeJoin(root, userPath string) (string, error) {
 	if strings.ContainsRune(userPath, 0) {
 		return "", fmt.Errorf("invalid path")
@@ -58,11 +62,11 @@ func SafeJoin(root, userPath string) (string, error) {
 }
 
 func underRoot(root, path string) error {
-	if path == root {
-		return nil
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return errEscapesRoot
 	}
-	sep := string(os.PathSeparator)
-	if !strings.HasPrefix(path, root+sep) {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return errEscapesRoot
 	}
 	return nil

@@ -99,6 +99,23 @@ func TestSafeJoinAbsoluteInsideRoot(t *testing.T) {
 	}
 }
 
+func TestSafeJoinRootIsFilesystemRoot(t *testing.T) {
+	// filepath.Rel("/", "/etc/passwd") is "etc/passwd", not an escape.
+	// A naive root+separator prefix becomes "//" and rejects everything.
+	got, err := SafeJoin("/", "etc/passwd")
+	if err != nil {
+		t.Fatalf("SafeJoin(/, etc/passwd): %v", err)
+	}
+	if got != "/etc/passwd" && !strings.HasPrefix(got, "/etc/") {
+		// EvalSymlinks may resolve /etc/passwd; either form is inside /.
+		t.Fatalf("got %q, want a path under /", got)
+	}
+
+	if _, err := SafeJoin("/tmp", "/etc/passwd"); err == nil {
+		t.Fatal("absolute path outside /tmp must be rejected")
+	}
+}
+
 func TestSafeJoinEmptyIsRoot(t *testing.T) {
 	root := t.TempDir()
 	got, err := SafeJoin(root, "")
