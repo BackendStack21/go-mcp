@@ -10,10 +10,12 @@ import (
 
 func main() {
 	srv := gomcp.NewServer("greeter", "1.0.0")
+	srv.SetInstructions("Use the greet tool to say hello. Read greeting://world for a canned greeting.")
 
 	// Tool: greet
 	srv.AddTool(gomcp.Tool{
 		Name:        "greet",
+		Title:       "Greet someone",
 		Description: "Greet a person by name",
 		InputSchema: gomcp.InputSchema{
 			Type: "object",

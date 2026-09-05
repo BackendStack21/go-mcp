@@ -192,12 +192,12 @@ srv.AddTool(gomcp.Tool{
 		Required: []string{"path"},
 	},
 	Handler: func(ctx context.Context, args map[string]any) (string, error) {
-		path := args["path"].(string)
-		// Prevent path traversal
-		if strings.Contains(path, "..") {
-			return "", fmt.Errorf("path traversal not allowed")
+		path, _ := args["path"].(string)
+		full, err := gomcp.SafeJoin("/var/project", path)
+		if err != nil {
+			return "", err
 		}
-		data, err := os.ReadFile(filepath.Join("/var/project", path))
+		data, err := os.ReadFile(full)
 		return string(data), err
 	},
 })
@@ -243,10 +243,13 @@ Register a callable tool. The AI sees the `Name`, `Description`, and `InputSchem
 
 ```go
 type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	InputSchema InputSchema `json:"inputSchema"`
-	Handler     ToolHandler `json:"-"`
+	Name         string           `json:"name"`
+	Title        string           `json:"title,omitempty"`
+	Description  string           `json:"description,omitempty"`
+	InputSchema  InputSchema      `json:"inputSchema"`
+	OutputSchema any              `json:"outputSchema,omitempty"`
+	Annotations  *ToolAnnotations `json:"annotations,omitempty"`
+	Handler      ToolHandler      `json:"-"`
 }
 
 type ToolHandler func(ctx context.Context, args map[string]any) (string, error)
@@ -301,22 +304,39 @@ func NewTextContent(text string) map[string]any
 
 Starts the server loop. Reads JSON-RPC 2.0 from `os.Stdin`, writes responses to `os.Stdout`. Blocks until stdin closes (EOF).
 
+### `srv.SetInstructions(text string)`
+
+Optional natural-language guidance returned by `initialize` and `server/discover`.
+
+### `gomcp.SafeJoin(root, userPath string) (string, error)`
+
+Resolves a model-supplied path against a root directory and rejects traversal, absolute escapes, and symlink escapes.
+
+### `srv.RunContext(ctx) error` / `srv.RunWithIOContext(ctx, r, w) error`
+
+Same as `Run` / `RunWithIO`, but handler invocations inherit `ctx`. Set `Server.HandlerTimeout` to bound a single handler.
+
 ---
 
 ## Protocol Support
 
+Default protocol version: **2026-07-28**. Legacy clients that still send `initialize` keep working — the server echoes `2024-11-05`, `2025-03-26`, or `2025-11-25` when asked.
+
 | Method | Description |
 |--------|-------------|
-| `initialize` | MCP handshake — reports server name, version, capabilities |
+| `server/discover` | 2026-07-28 capability probe — versions, identity, cache hints |
+| `initialize` | Legacy handshake — reports server name, version, capabilities |
 | `notifications/initialized` | Consumed silently |
-| `tools/list` | Returns metadata for all registered tools |
+| `ping` | Liveness check (kept for older clients) |
+| `tools/list` | Returns metadata for all registered tools (deterministic order, optional cursor) |
 | `tools/call` | Dispatches a call to the matching tool handler |
 | `resources/list` | Returns metadata for all registered resources |
 | `resources/read` | Reads a resource by URI |
+| `resources/templates/list` | Empty catalog (spec-compliant; templates are not registered yet) |
 | `prompts/list` | Returns metadata for all registered prompts |
 | `prompts/get` | Builds a prompt from arguments |
 
-All eight methods implemented. **No partial support.**
+2026-only result fields (`resultType`, `ttlMs`, `cacheScope`, `_meta`) are emitted only when the client declares protocol version `2026-07-28`. Older clients keep seeing the pre-2026 JSON shape.
 
 ---
 
