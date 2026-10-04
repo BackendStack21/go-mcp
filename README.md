@@ -1,6 +1,8 @@
 # go-mcp
 
-Zero-dependency [Model Context Protocol](https://modelcontextprotocol.io) server framework for Go. Expose your Go code as **tools**, **resources**, and **prompts** that AI agents can call. Stdio transport. Single binary. No runtime.
+> Zero-dependency Model Context Protocol (MCP) server framework for Go — stdio and Streamable HTTP transports, plus MCP clients for both.
+
+Zero-dependency [Model Context Protocol](https://modelcontextprotocol.io) server framework for Go. Expose your Go code as **tools**, **resources**, and **prompts** that AI agents can call. Stdio and Streamable HTTP transports, plus clients for both. Single binary. No runtime.
 
 ```bash
 go get github.com/BackendStack21/go-mcp
@@ -303,6 +305,45 @@ func NewTextContent(text string) map[string]any
 ### `srv.Run() error`
 
 Starts the server loop. Reads JSON-RPC 2.0 from `os.Stdin`, writes responses to `os.Stdout`. Blocks until stdin closes (EOF).
+
+### `srv.Handler() http.Handler` / `srv.ListenAndServe(addr) error` / `srv.Serve(l net.Listener) error`
+
+Serves the same JSON-RPC dispatch over the MCP **Streamable HTTP** transport. Each `POST` carries one JSON-RPC message; responses are `application/json` or SSE (when the client's `Accept` prefers it), notifications get `202`, and anything but `POST` (with a JSON body) is `405`/`415`. Reuses `MaxRequestBytes` and `HandlerTimeout`. Stateless — no session management, no server-initiated streams.
+
+```go
+srv := gomcp.NewServer("my-server", "1.0.0")
+// ... register tools ...
+srv.ListenAndServe("localhost:8080") // blocks
+```
+
+### Client — `gomcp.NewHTTPClient(url)` / `gomcp.NewStdioClient(path, args...)`
+
+Both return the same `Client` interface, safe for concurrent use:
+
+```go
+c := gomcp.NewHTTPClient("http://localhost:8080")
+// or: c, err := gomcp.NewStdioClient("./my-server")
+res, _ := c.Initialize(ctx, "my-client", "1.0.0")
+c.NotifyInitialized(ctx)
+tools, _ := c.ListTools(ctx)
+out, _ := c.CallTool(ctx, "echo", map[string]any{"message": "hi"})
+```
+
+Methods: `Initialize`, `NotifyInitialized`, `ListTools`, `CallTool`, `ListResources`, `ReadResource`, `ListPrompts`, `GetPrompt`, `Close`.
+
+### `srv.SetAuthToken(token string)` / `srv.SetAllowedOrigins(origins []string)`
+
+Optional HTTP-transport hardening:
+
+- **Bearer auth** — when a token is set, every request must carry `Authorization: Bearer <token>`; anything else gets `401` with a `WWW-Authenticate: Bearer` challenge. Comparison is constant-time (`crypto/subtle`). Pair with any external token issuer (OAuth resource server, API gateway, or a plain static key).
+- **Origin allowlist** — when set, browser requests with an `Origin` not on the list get `403` (DNS-rebinding / CSRF defense, per 2025-11-25 spec guidance). Non-browser clients (no `Origin` header) are unaffected.
+
+Both default to off; stdio is never affected — its trust model is the user launching the process.
+
+```go
+srv.SetAuthToken(os.Getenv("MCP_TOKEN"))
+srv.SetAllowedOrigins([]string{"https://claude.ai"})
+```
 
 ### `srv.SetInstructions(text string)`
 
