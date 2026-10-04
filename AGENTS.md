@@ -40,8 +40,11 @@ Server.run()  ← dispatch loop
 | `gomcp/protocol.go` | Protocol versions, `_meta` negotiation, pagination |
 | `gomcp/path.go` | `SafeJoin` — path-traversal-safe filesystem helper |
 | `gomcp/server.go` | Server struct, Run(), all JSON-RPC method handlers |
+| `gomcp/httpserver.go` | MCP Streamable HTTP transport (`Handler`, `ListenAndServe`, `Serve`) |
+| `gomcp/client.go` | MCP client (`Client` interface, `NewHTTPClient`, `NewStdioClient`) |
 | `gomcp/server_test.go` | Unit + integration tests (pipe-based) |
 | `gomcp/protocol_test.go` | 2026-07-28 + security tests |
+| `gomcp/httpserver_test.go`, `gomcp/client_test.go`, `gomcp/http_e2e_test.go` | HTTP transport, client, and loopback E2E tests |
 | `gomcp/e2e_test.go` | Subprocess E2E test |
 | `examples/greet/main.go` | Canonical example MCP server |
 

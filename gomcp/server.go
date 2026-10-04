@@ -81,6 +81,14 @@ type Server struct {
 	// 2026-07-28 results. Empty selects "public". Use "private" when
 	// list or read results are caller-specific.
 	CacheScope string
+
+	// authToken, when set, is the exact Bearer token required by the
+	// HTTP transport. See SetAuthToken.
+	authToken string
+
+	// allowedOrigins, when non-empty, is the Origin allowlist enforced
+	// by the HTTP transport. See SetAllowedOrigins.
+	allowedOrigins []string
 }
 
 // NewServer creates a new MCP server with the given name and version.
@@ -112,6 +120,28 @@ func (s *Server) SetInstructions(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.instructions = text
+}
+
+// SetAuthToken requires HTTP transport clients to present this exact token
+// as `Authorization: Bearer <token>`. Requests without valid credentials
+// get 401 with a Bearer WWW-Authenticate challenge. Empty (default) allows
+// anonymous access. Stdio transport is unaffected (trust comes from the
+// user launching the process).
+func (s *Server) SetAuthToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authToken = token
+}
+
+// SetAllowedOrigins restricts which Origins browser-based HTTP clients may
+// come from (DNS-rebinding and CSRF defense, per the 2025-11-25 spec
+// guidance). Requests with an Origin not on the list get 403. Requests
+// without an Origin header (non-browser clients) are always allowed.
+// An empty list (default) does no Origin checking.
+func (s *Server) SetAllowedOrigins(origins []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowedOrigins = origins
 }
 
 // AddTool registers a tool with the server. Tools are callable functions
