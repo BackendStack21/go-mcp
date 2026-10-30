@@ -70,6 +70,8 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	authToken := s.authToken
 	allowedOrigins := s.allowedOrigins
+	authFunc := s.authFunc
+	metaURL := s.resourceMetadataURL
 	s.mu.RUnlock()
 
 	// Origin check first: a cross-site request never reaches dispatch.
@@ -78,14 +80,23 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if authToken != "" {
+	authorized := true
+	if authFunc != nil {
+		authorized = authFunc(r)
+	} else if authToken != "" {
 		const prefix = "Bearer "
 		authz := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authz, prefix) || !constantTimeEqual(strings.TrimPrefix(authz, prefix), authToken) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+		authorized = strings.HasPrefix(authz, prefix) && constantTimeEqual(strings.TrimPrefix(authz, prefix), authToken)
+	}
+	if !authorized {
+		challenge := `Bearer realm="mcp"`
+		if metaURL != "" {
+			esc := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(metaURL)
+			challenge += `, resource_metadata="` + esc + `"`
 		}
+		w.Header().Set("WWW-Authenticate", challenge)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
 
 	if r.Method != http.MethodPost {
