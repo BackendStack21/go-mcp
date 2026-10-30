@@ -40,8 +40,8 @@ Server.run()  ← dispatch loop
 | `gomcp/protocol.go` | Protocol versions, `_meta` negotiation, pagination |
 | `gomcp/path.go` | `SafeJoin` — path-traversal-safe filesystem helper |
 | `gomcp/server.go` | Server struct, Run(), all JSON-RPC method handlers |
-| `gomcp/httpserver.go` | MCP Streamable HTTP transport (`Handler`, `ListenAndServe`, `Serve`) |
-| `gomcp/client.go` | MCP client (`Client` interface, `NewHTTPClient`, `NewStdioClient`) |
+| `gomcp/httpserver.go` | MCP Streamable HTTP transport (`Handler`, `ListenAndServe`, `Serve`); pluggable auth and the public well-known endpoint |
+| `gomcp/client.go` | MCP client (`Client` interface, `NewHTTPClient`, `NewStdioClient`); `SetAuthProvider`, typed `AuthError` |
 | `gomcp/server_test.go` | Unit + integration tests (pipe-based) |
 | `gomcp/protocol_test.go` | 2026-07-28 + security tests |
 | `gomcp/httpserver_test.go`, `gomcp/client_test.go`, `gomcp/http_e2e_test.go` | HTTP transport, client, and loopback E2E tests |
@@ -58,6 +58,8 @@ Server.run()  ← dispatch loop
 - **Inbound messages are size-capped.** One line may carry at most `Server.MaxRequestBytes` bytes (default `DefaultMaxRequestBytes`, 10 MiB; negative disables — not recommended). An oversized line is answered with `-32600` (id null), its remainder discarded, and the loop keeps serving — a single line can never exhaust memory.
 - **Go naming.** Exported types are PascalCase. Unexported internals are camelCase. Test functions are `TestXxx`.
 - **Protocol versions.** Default is `2026-07-28`. Legacy `initialize` still works and echoes `2024-11-05`, `2025-03-26`, or `2025-11-25` when the client asks for them. 2026-only fields (`resultType`, `ttlMs`, `cacheScope`, result `_meta`) are emitted only when the request declares `2026-07-28`.
+- **Pluggable HTTP auth.** `SetAuthFunc` replaces (wins over) the `SetAuthToken` static check; a rejected request gets `401` with `WWW-Authenticate: Bearer realm="mcp"`, plus `resource_metadata="<url>"` when `SetResourceMetadataURL` is set. `SetProtectedResourceMetadata` serves `GET /.well-known/oauth-protected-resource` publicly (before the origin and auth checks). The library validates no tokens itself.
+- **Client auth errors are typed.** A `401` becomes `*gomcp.AuthError` (`ResourceMetadata`, `Body`); use `errors.As`, or `errors.Is(err, gomcp.ErrUnauthorized)`. `HTTPClient.SetAuthProvider`/`WithAuthHeader` supply the Authorization header per request (wins over the static token; empty falls back; nil clears).
 - **Handlers must not kill the loop.** A panicking or timed-out handler is answered in-band; registration maps are mutex-protected.
 
 ## Testing

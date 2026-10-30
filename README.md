@@ -345,6 +345,49 @@ srv.SetAuthToken(os.Getenv("MCP_TOKEN"))
 srv.SetAllowedOrigins([]string{"https://claude.ai"})
 ```
 
+#### OAuth resource server (RFC 9728)
+
+For OAuth-protected deployments, plug in your own token validation and advertise where clients find the authorization server. go-mcp stays dependency-free: it validates nothing itself, you bring the verifier.
+
+- `srv.SetAuthFunc(fn func(r *http.Request) bool)` — custom authenticator run on every HTTP request. When set it **wins over** `SetAuthToken` (the static token is not consulted); returning `false` yields `401`. `nil` restores the default.
+- `srv.SetResourceMetadataURL(url string)` — adds `resource_metadata="<url>"` to the `WWW-Authenticate: Bearer realm="mcp"` header of every `401`, so clients can discover the authorization server. Empty restores the plain challenge.
+- `srv.SetProtectedResourceMetadata(meta map[string]any)` — serves `meta` as JSON on `GET /.well-known/oauth-protected-resource`. The endpoint is public: it skips both the auth and the Origin checks. `nil` (default) disables it.
+
+```go
+srv.SetAuthFunc(func(r *http.Request) bool {
+    return verifyJWT(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) // your validator
+})
+srv.SetResourceMetadataURL("https://mcp.example.com/.well-known/oauth-protected-resource")
+srv.SetProtectedResourceMetadata(map[string]any{
+    "resource":              "https://mcp.example.com",
+    "authorization_servers": []string{"https://auth.example.com"},
+})
+```
+
+Flow: the client calls without a token, gets `401` with `resource_metadata`, fetches the well-known document, talks to the listed authorization server to obtain a token, and retries.
+
+#### Client authentication and `AuthError`
+
+`HTTPClient` (from `NewHTTPClient` / `NewHTTPClientWithToken`) supports per-request credentials:
+
+- `c.SetAuthProvider(fn func() string)` / chainable `c.WithAuthHeader(fn)` — `fn` returns the full `Authorization` header value (e.g. `"Bearer abc"`), used verbatim on every request. It wins over the static token from `NewHTTPClientWithToken`; an empty return falls back to the static token; `nil` clears the provider.
+- A `401` response is returned as a typed `*gomcp.AuthError` with `ResourceMetadata` (from the challenge, empty if absent) and `Body`. `errors.Is(err, gomcp.ErrUnauthorized)` matches any `*AuthError`.
+
+```go
+c := gomcp.NewHTTPClient("https://mcp.example.com").
+    WithAuthHeader(func() string { return "Bearer " + tokenStore.Current() })
+
+_, err := c.ListTools(ctx)
+var ae *gomcp.AuthError
+if errors.As(err, &ae) {
+    // ae.ResourceMetadata points at the protected-resource document:
+    // fetch it, run your OAuth flow, update tokenStore, then retry.
+    log.Printf("auth required, metadata at %s", ae.ResourceMetadata)
+} else if errors.Is(err, gomcp.ErrUnauthorized) {
+    log.Print("unauthorized")
+}
+```
+
 ### `srv.SetInstructions(text string)`
 
 Optional natural-language guidance returned by `initialize` and `server/discover`.
