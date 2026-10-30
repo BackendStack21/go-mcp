@@ -1,12 +1,15 @@
 package gomcp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -340,5 +343,76 @@ func TestProtectedResourceMetadataPostNotIntercepted(t *testing.T) {
 	resp, body := authPost(t, ts.URL+wellKnownPath, nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 (body: %s)", resp.StatusCode, body)
+	}
+}
+
+func TestHTTPClientOAuthDiscoveryEndToEnd(t *testing.T) {
+	var base string
+	srv := NewServer("oauth-e2e", "1.0.0")
+	var mu sync.Mutex
+	valid := "tok-1"
+	srv.SetAuthFunc(func(r *http.Request) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return r.Header.Get("Authorization") == "Bearer "+valid
+	})
+	ts := httptest.NewUnstartedServer(srv.Handler())
+	ts.Start()
+	t.Cleanup(ts.Close)
+	base = ts.URL
+	meta := map[string]any{
+		"resource":              base,
+		"authorization_servers": []any{"https://as.example"},
+	}
+	srv.SetResourceMetadataURL(base + "/.well-known/oauth-protected-resource")
+	srv.SetProtectedResourceMetadata(meta)
+
+	// Unauthenticated client is challenged with a typed error.
+	anon := NewHTTPClient(base)
+	_, err := anon.ListTools(context.Background())
+	var ae *AuthError
+	if !errors.As(err, &ae) || !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("err = %v (%T), want *AuthError", err, err)
+	}
+	if ae.ResourceMetadata != base+"/.well-known/oauth-protected-resource" {
+		t.Fatalf("ResourceMetadata = %q", ae.ResourceMetadata)
+	}
+
+	// Discovery: fetch the advertised metadata document.
+	resp, err := http.Get(ae.ResourceMetadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metadata status = %d", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, meta) {
+		t.Fatalf("metadata = %v, want %v", got, meta)
+	}
+
+	// A client with a rotating provider succeeds across rotations.
+	c := NewHTTPClient(base)
+	token := "tok-1"
+	c.SetAuthProvider(func() string { return "Bearer " + token })
+	if _, err := c.ListTools(context.Background()); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	mu.Lock()
+	valid = "tok-2"
+	mu.Unlock()
+	if _, err := c.ListTools(context.Background()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("stale token: err = %v, want ErrUnauthorized", err)
+	}
+	token = "tok-2"
+	if _, err := c.ListTools(context.Background()); err != nil {
+		t.Fatalf("after rotation: %v", err)
+	}
+	if err := c.NotifyInitialized(context.Background()); err != nil {
+		t.Fatalf("notify after rotation: %v", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -214,6 +215,8 @@ type HTTPClient struct {
 	core   clientCore
 	nextID int64
 	mu     sync.Mutex
+
+	authProvider func() string
 }
 
 // NewHTTPClient returns a Client posting JSON-RPC messages to url.
@@ -230,7 +233,102 @@ func NewHTTPClientWithToken(url, token string) *HTTPClient {
 	return hc
 }
 
+// ErrUnauthorized is matched by errors.Is for any *AuthError.
+var ErrUnauthorized = errors.New("unauthorized")
+
+// AuthError is returned when the server answers HTTP 401.
+type AuthError struct {
+	// ResourceMetadata is the resource_metadata URL from the
+	// WWW-Authenticate challenge (empty if absent).
+	ResourceMetadata string
+	// Body is the response body text.
+	Body string
+}
+
+// Error implements error.
+func (e *AuthError) Error() string {
+	msg := "http 401: unauthorized"
+	if e.Body != "" {
+		msg = "http 401: " + e.Body
+	}
+	if e.ResourceMetadata != "" {
+		msg += " (resource_metadata=" + e.ResourceMetadata + ")"
+	}
+	return msg
+}
+
+// Is reports whether target is ErrUnauthorized.
+func (e *AuthError) Is(target error) bool { return target == ErrUnauthorized }
+
+// newAuthError builds an AuthError from a 401 response.
+func newAuthError(h http.Header, body []byte) *AuthError {
+	ae := &AuthError{Body: strings.TrimSpace(string(body))}
+	for _, ch := range h.Values("WWW-Authenticate") {
+		if v, ok := challengeParam(ch, "resource_metadata"); ok {
+			ae.ResourceMetadata = v
+			break
+		}
+	}
+	return ae
+}
+
+// challengeParam extracts a quoted auth-param value, honouring backslash
+// escapes inside the quoted string.
+func challengeParam(challenge, name string) (string, bool) {
+	rest := challenge
+	for {
+		i := strings.Index(rest, name+"=\"")
+		if i < 0 {
+			return "", false
+		}
+		if i > 0 && rest[i-1] != ' ' && rest[i-1] != ',' {
+			rest = rest[i+len(name):]
+			continue
+		}
+		var sb strings.Builder
+		q := rest[i+len(name)+2:]
+		for j := 0; j < len(q); j++ {
+			switch q[j] {
+			case '\\':
+				if j+1 < len(q) {
+					j++
+					sb.WriteByte(q[j])
+				}
+			case '"':
+				return sb.String(), true
+			default:
+				sb.WriteByte(q[j])
+			}
+		}
+		return "", false
+	}
+}
+
+// SetAuthProvider sets a per-request Authorization header provider. Its
+// value is used verbatim and wins over the static token; an empty value
+// falls back to the static token; nil clears the provider.
+func (c *HTTPClient) SetAuthProvider(fn func() string) {
+	c.mu.Lock()
+	c.authProvider = fn
+	c.mu.Unlock()
+}
+
+// WithAuthHeader is a chainable SetAuthProvider.
+func (c *HTTPClient) WithAuthHeader(fn func() string) *HTTPClient {
+	c.SetAuthProvider(fn)
+	return c
+}
+
 func (c *HTTPClient) setAuth(h http.Header) {
+	c.mu.Lock()
+	p := c.authProvider
+	c.mu.Unlock()
+	if p != nil {
+		if v := p(); v != "" {
+			h.Set("Authorization", v)
+			return
+		}
+	}
 	if c.token != "" {
 		h.Set("Authorization", "Bearer "+c.token)
 	}
@@ -267,6 +365,9 @@ func (c *HTTPClient) call(ctx context.Context, method string, params any, out an
 	if resp.StatusCode == http.StatusAccepted {
 		return fmt.Errorf("unexpected 202 for request %q", method)
 	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return newAuthError(resp.Header, body)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -296,6 +397,9 @@ func (c *HTTPClient) notify(ctx context.Context, method string, params any) erro
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusUnauthorized {
+			return newAuthError(resp.Header, b)
+		}
 		return fmt.Errorf("notify %q: http %d: %s", method, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
