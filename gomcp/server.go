@@ -96,6 +96,10 @@ type Server struct {
 
 	// resourceMetadataURL is advertised in 401 challenges. See SetResourceMetadataURL.
 	resourceMetadataURL string
+
+	// protectedResourceMeta is the pre-encoded RFC 9728 document served at
+	// the well-known path. See SetProtectedResourceMetadata.
+	protectedResourceMeta []byte
 }
 
 // NewServer creates a new MCP server with the given name and version.
@@ -156,6 +160,20 @@ func (s *Server) SetResourceMetadataURL(url string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resourceMetadataURL = url
+}
+
+// SetProtectedResourceMetadata makes the HTTP handler serve meta as JSON on
+// GET /.well-known/oauth-protected-resource (RFC 9728), without
+// authentication. Nil (default) disables the endpoint.
+func (s *Server) SetProtectedResourceMetadata(meta map[string]any) {
+	// Encoding at set time snapshots the document, nested values included.
+	var enc []byte
+	if meta != nil {
+		enc, _ = json.Marshal(meta) // unencodable metadata leaves the endpoint disabled
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protectedResourceMeta = enc
 }
 
 // SetAllowedOrigins restricts which Origins browser-based HTTP clients may

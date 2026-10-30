@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -246,4 +247,98 @@ func TestResourceMetadataURLUnsetKeepsPlainChallenge(t *testing.T) {
 	ts := newAuthTestServer(t, srv)
 	resp, _ := authPost(t, ts.URL, nil)
 	wantChallenge(t, resp, `Bearer realm="mcp"`)
+}
+
+const wellKnownPath = "/.well-known/oauth-protected-resource"
+
+func newMetaServer(meta map[string]any) *Server {
+	srv := NewServer("meta-test", "1.0.0")
+	srv.SetAuthToken("tok")
+	srv.SetAllowedOrigins([]string{"https://ok"})
+	srv.SetProtectedResourceMetadata(meta)
+	return srv
+}
+
+func TestProtectedResourceMetadataServedUnauthenticated(t *testing.T) {
+	meta := map[string]any{
+		"resource":              "https://x",
+		"authorization_servers": []any{"https://as"},
+	}
+	ts := newAuthTestServer(t, newMetaServer(meta))
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+wellKnownPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://evil")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("body not JSON: %v (%s)", err, body)
+	}
+	if !reflect.DeepEqual(got, meta) {
+		t.Fatalf("body = %v, want %v", got, meta)
+	}
+}
+
+func TestProtectedResourceMetadataCopiedAtSetTime(t *testing.T) {
+	meta := map[string]any{"resource": "https://x"}
+	ts := newAuthTestServer(t, newMetaServer(meta))
+	meta["resource"] = "https://mutated"
+
+	resp, err := http.Get(ts.URL + wellKnownPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v (status %d)", err, resp.StatusCode)
+	}
+	if got["resource"] != "https://x" {
+		t.Fatalf("resource = %v, want https://x (map must be copied at set time)", got["resource"])
+	}
+}
+
+func TestProtectedResourceMetadataMCPEndpointUnaffected(t *testing.T) {
+	ts := newAuthTestServer(t, newMetaServer(map[string]any{"resource": "https://x"}))
+	resp, body := authPost(t, ts.URL+"/", map[string]string{"Authorization": "Bearer tok"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"result"`) {
+		t.Fatalf("body = %s, want JSON-RPC result", body)
+	}
+}
+
+func TestProtectedResourceMetadataUnsetGetIs405(t *testing.T) {
+	srv := NewServer("meta-unset", "1.0.0")
+	ts := newAuthTestServer(t, srv)
+	resp, err := http.Get(ts.URL + wellKnownPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestProtectedResourceMetadataPostNotIntercepted(t *testing.T) {
+	ts := newAuthTestServer(t, newMetaServer(map[string]any{"resource": "https://x"}))
+	resp, body := authPost(t, ts.URL+wellKnownPath, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body: %s)", resp.StatusCode, body)
+	}
 }

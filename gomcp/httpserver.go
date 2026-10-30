@@ -72,7 +72,15 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	allowedOrigins := s.allowedOrigins
 	authFunc := s.authFunc
 	metaURL := s.resourceMetadataURL
+	prm := s.protectedResourceMeta
 	s.mu.RUnlock()
+
+	// RFC 9728 metadata is public: served before the origin and auth checks.
+	if prm != nil && r.Method == http.MethodGet && r.URL.Path == "/.well-known/oauth-protected-resource" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(prm)
+		return
+	}
 
 	// Origin check first: a cross-site request never reaches dispatch.
 	if len(allowedOrigins) > 0 && r.Header.Get("Origin") != "" && !containsString(allowedOrigins, r.Header.Get("Origin")) {
